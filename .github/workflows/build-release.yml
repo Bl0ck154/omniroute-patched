@@ -36,10 +36,10 @@ jobs:
       OMNIROUTE_DISABLE_BACKGROUND_SERVICES: "true"
       DISABLE_SQLITE_AUTO_BACKUP: "true"
       NEXT_TELEMETRY_DISABLED: "1"
-      OMNIROUTE_BUILD_MEMORY_MB: "8192"
+      OMNIROUTE_BUILD_MEMORY_MB: "6144"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Clone exact upstream tag
         run: git clone --depth 1 --branch "v${VERSION}" https://github.com/diegosouzapw/OmniRoute.git upstream
@@ -70,9 +70,28 @@ jobs:
         working-directory: upstream
         run: npx playwright install --with-deps chromium
 
-      - name: Build official release
+      - name: Report runner resources
+        run: |
+          nproc
+          free -h
+          df -h "$GITHUB_WORKSPACE"
+          node --version
+
+      - name: Build Next release
+        timeout-minutes: 35
         working-directory: upstream
-        run: npm run build:release
+        run: |
+          rm -rf .build dist
+          export OMNIROUTE_BUILD_SHA="$(git rev-parse --short HEAD)"
+          timeout --signal=TERM --kill-after=2m 33m npm run build
+
+      - name: Build CLI release
+        timeout-minutes: 15
+        working-directory: upstream
+        run: |
+          export OMNIROUTE_BUILD_SHA="$(git rev-parse --short HEAD)"
+          timeout --signal=TERM --kill-after=2m 13m npm run build:cli
+          node scripts/build/write-build-sha.mjs
 
       - name: Pack npm artifact
         id: pack
@@ -115,7 +134,6 @@ jobs:
     permissions:
       issues: write
     steps:
-      - uses: actions/checkout@v4
       - name: Open or update compatibility issue
         env:
           GH_TOKEN: ${{ github.token }}
