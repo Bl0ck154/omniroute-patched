@@ -1,0 +1,20 @@
+name: Probe VPS connectivity
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Probe public ports
+        run: |
+          set +e
+          timeout 10 nc -vz 167.86.96.35 22
+          echo "SSH_EXIT=$?"
+          timeout 10 nc -vz 167.86.96.35 443
+          echo "HTTPS_EXIT=$?"
