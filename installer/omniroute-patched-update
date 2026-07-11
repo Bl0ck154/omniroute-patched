@@ -87,6 +87,27 @@ backup_databases() {
   echo "$out"
 }
 
+switch_link() {
+  local target=$1
+  [[ -x "$target/bin/omniroute.mjs" ]] || die "launcher missing: $target"
+  runuser -u "$SERVICE_USER" -- test -x "$target/bin/omniroute.mjs" ||
+    die "launcher is not accessible to $SERVICE_USER: $target"
+  ln -sfn "$target" "$CURRENT_LINK.new"
+  mv -Tf "$CURRENT_LINK.new" "$CURRENT_LINK"
+  [[ $(readlink -f "$CURRENT_LINK") == "$target" ]] || die "atomic link switch failed"
+  runuser -u "$SERVICE_USER" -- test -x "$CURRENT_LINK/bin/omniroute.mjs" ||
+    die "switched launcher is not accessible to $SERVICE_USER"
+}
+
+restore_package() {
+  local previous=$1
+  switch_link "$previous"
+  "${SYSTEMCTL[@]}" restart "$SERVICE_NAME"
+  wait_http "http://127.0.0.1:$PORT/api/auth/status" 200 ||
+    die "rollback package did not recover"
+  rm -f "$STATE_DIR/pending"
+}
+
 install_release() {
   local artifact=${1:?artifact required} manifest=${2:?manifest required}
   [[ -f $artifact && -f $manifest ]] || die "artifact or manifest not found"
@@ -107,26 +128,28 @@ install_release() {
   npm install --prefix "$stage" --omit=dev --ignore-scripts=false "$artifact"
   [[ $(node -p "require('$stage/node_modules/omniroute/package.json').version") == "$version" ]] || die "installed version mismatch"
   grep -Rqs 'data-omniroute-quota-ui-patch' "$stage/node_modules/omniroute/dist/.build/next" || die "UI patch marker absent"
+  chmod 0755 "$stage"
+  runuser -u "$SERVICE_USER" -- test -x "$stage/node_modules/omniroute/bin/omniroute.mjs" ||
+    die "staged launcher is not accessible to $SERVICE_USER"
   canary "$stage/node_modules/omniroute"
   mv "$stage" "$final"
+  chmod 0755 "$final"
+  runuser -u "$SERVICE_USER" -- test -x "$final/node_modules/omniroute/bin/omniroute.mjs" ||
+    die "release launcher is not accessible to $SERVICE_USER"
   CLEANUP_STAGE=
 
   previous=$(readlink -f "$CURRENT_LINK")
   db_backup=$(backup_databases)
   printf '%s\n' "$previous" >"$STATE_DIR/previous"
   printf '%s\n' "$final/node_modules/omniroute" >"$STATE_DIR/pending"
-  ln -sfn "$final/node_modules/omniroute" "$CURRENT_LINK.new"
-  mv -Tf "$CURRENT_LINK.new" "$CURRENT_LINK"
+  switch_link "$final/node_modules/omniroute"
   if ! "${SYSTEMCTL[@]}" restart "$SERVICE_NAME" || ! wait_http "http://127.0.0.1:$PORT/api/auth/status" 200; then
-    ln -sfn "$previous" "$CURRENT_LINK.new"
-    mv -Tf "$CURRENT_LINK.new" "$CURRENT_LINK"
-    "${SYSTEMCTL[@]}" restart "$SERVICE_NAME" || true
+    restore_package "$previous"
     die "production health check failed; package rolled back (database backup: $db_backup)"
   fi
   code=$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/v1/models" || true)
   if [[ $code != 401 ]]; then
-    ln -sfn "$previous" "$CURRENT_LINK.new"; mv -Tf "$CURRENT_LINK.new" "$CURRENT_LINK"
-    "${SYSTEMCTL[@]}" restart "$SERVICE_NAME" || true
+    restore_package "$previous"
     die "production API guard returned $code; package rolled back"
   fi
   rm -f "$STATE_DIR/pending"
@@ -144,7 +167,7 @@ rollback() {
   [[ -x "$target/bin/omniroute.mjs" ]] || die "previous launcher missing: $target"
   current=$(readlink -f "$CURRENT_LINK")
   canary "$target"
-  ln -sfn "$target" "$CURRENT_LINK.new"; mv -Tf "$CURRENT_LINK.new" "$CURRENT_LINK"
+  switch_link "$target"
   printf '%s\n' "$current" >"$STATE_DIR/previous"
   "${SYSTEMCTL[@]}" restart "$SERVICE_NAME"
   wait_http "http://127.0.0.1:$PORT/api/auth/status" 200 || die "rollback target failed health check"
