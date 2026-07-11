@@ -49,12 +49,17 @@ make_jwt() {
 canary() {
   local package_root=$1 tmp pid token code
   tmp=$(mktemp -d /tmp/omniroute-canary.XXXXXX)
-  JWT_SECRET=canary-jwt-secret-0123456789-abcdefghijklmnopqrstuvwxyz \
-  API_KEY_SECRET=canary-api-secret-0123456789-abcdefghijklmnopqrstuvwxyz \
-  INITIAL_PASSWORD=canary-only-password REQUIRE_API_KEY=true AUTH_COOKIE_SECURE=false \
-  OMNIROUTE_DISABLE_BACKGROUND_SERVICES=true DISABLE_SQLITE_AUTO_BACKUP=true \
-  NODE_ENV=production HOST=127.0.0.1 PORT="$CANARY_PORT" DATA_DIR="$tmp/data" \
-    /usr/bin/node "$package_root/bin/omniroute.mjs" --port "$CANARY_PORT" --no-open >"$tmp/server.log" 2>&1 &
+  chown "$SERVICE_USER:$SERVICE_USER" "$tmp"
+  (
+    cd "/home/$SERVICE_USER"
+    exec runuser -u "$SERVICE_USER" -- env \
+      JWT_SECRET=canary-jwt-secret-0123456789-abcdefghijklmnopqrstuvwxyz \
+      API_KEY_SECRET=canary-api-secret-0123456789-abcdefghijklmnopqrstuvwxyz \
+      INITIAL_PASSWORD=canary-only-password REQUIRE_API_KEY=true AUTH_COOKIE_SECURE=false \
+      OMNIROUTE_DISABLE_BACKGROUND_SERVICES=true DISABLE_SQLITE_AUTO_BACKUP=true \
+      NODE_ENV=production HOST=127.0.0.1 PORT="$CANARY_PORT" DATA_DIR="$tmp/data" \
+      /usr/bin/node "$package_root/bin/omniroute.mjs" --port "$CANARY_PORT" --no-open
+  ) >"$tmp/server.log" 2>&1 &
   pid=$!
   CLEANUP_PID=$pid
   CLEANUP_TMP=$tmp
