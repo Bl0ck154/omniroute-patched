@@ -105,6 +105,13 @@ jobs:
       - name: Install packed artifact
         run: npm install --prefix smoke-root --omit=dev "./artifacts/${{ steps.pack.outputs.file }}"
 
+      - name: Preserve candidate artifact for diagnostics
+        uses: actions/upload-artifact@v4
+        with:
+          name: omniroute-${{ inputs.version }}-quota-ui-${{ inputs.patch_revision }}-candidate
+          path: artifacts/${{ steps.pack.outputs.file }}
+          retention-days: 3
+
       - name: Test packaged launcher and dashboard
         run: cp tests/packaged-smoke.mjs upstream/.patched-packaged-smoke.mjs && node upstream/.patched-packaged-smoke.mjs "$GITHUB_WORKSPACE/smoke-root/node_modules/omniroute"
 

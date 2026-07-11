@@ -91,7 +91,10 @@ try {
   await page.route("**/api/usage/provider-limits", (route) => route.fulfill({ json: { caches: {} } }));
   await page.route("**/api/usage/patched-smoke-codex", (route) => route.fulfill({ json: { quotas: [], plan: "plus" } }));
 
-  const response = await page.goto(`${origin}/dashboard/quota`, { waitUntil: "networkidle", timeout: 90_000 });
+  const response = await page.goto(`${origin}/dashboard/quota`, {
+    waitUntil: "domcontentloaded",
+    timeout: 90_000
+  });
   if (!response || response.status() !== 200) throw new Error(`quota page expected 200, got ${response?.status()}`);
   await page.locator('[data-omniroute-quota-ui-patch="source-v1"]').waitFor({ state: "visible", timeout: 30_000 });
   await page.getByText("Quota UI patch", { exact: true }).waitFor({ state: "visible", timeout: 30_000 });
@@ -115,4 +118,3 @@ try {
   if (child.exitCode === null) child.kill("SIGKILL");
   await rm(dataDir, { recursive: true, force: true });
 }
-
