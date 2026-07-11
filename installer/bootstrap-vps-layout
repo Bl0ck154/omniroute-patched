@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVICE_USER=${SERVICE_USER:-admin}
+SERVICE_NAME=${SERVICE_NAME:-omniroute.service}
+CURRENT_PACKAGE=${CURRENT_PACKAGE:-/home/admin/.npm-global/lib/node_modules/omniroute}
+CURRENT_LINK=${CURRENT_LINK:-/opt/omniroute-current}
+UNIT_DIR=${UNIT_DIR:-/home/admin/.config/systemd/user}
+DROPIN_DIR="$UNIT_DIR/${SERVICE_NAME}.d"
+RUNTIME_ENV=${RUNTIME_ENV:-/home/admin/.omniroute/runtime.env}
+SYSTEMCTL=(runuser -u "$SERVICE_USER" -- env XDG_RUNTIME_DIR="/run/user/$(id -u "$SERVICE_USER")" systemctl --user)
+
+[[ $EUID -eq 0 ]] || { echo "must run as root" >&2; exit 1; }
+[[ -x "$CURRENT_PACKAGE/bin/omniroute.mjs" ]] || { echo "package launcher not found: $CURRENT_PACKAGE" >&2; exit 1; }
+[[ -f "$UNIT_DIR/$SERVICE_NAME" ]] || { echo "service unit not found" >&2; exit 1; }
+
+install -d -m 0755 /opt/omniroute-releases
+install -d -m 0700 -o "$SERVICE_USER" -g "$SERVICE_USER" "$(dirname "$RUNTIME_ENV")"
+if [[ ! -f "$RUNTIME_ENV" ]]; then
+  install -m 0600 -o "$SERVICE_USER" -g "$SERVICE_USER" "$CURRENT_PACKAGE/.env" "$RUNTIME_ENV"
+fi
+
+backup="/root/omniroute-service-backup-$(date -u +%Y%m%dT%H%M%SZ)"
+install -d -m 0700 "$backup"
+cp -a "$UNIT_DIR/$SERVICE_NAME" "$backup/"
+[[ ! -d "$DROPIN_DIR" ]] || cp -a "$DROPIN_DIR" "$backup/"
+
+ln -sfn "$CURRENT_PACKAGE" "$CURRENT_LINK.new"
+mv -Tf "$CURRENT_LINK.new" "$CURRENT_LINK"
+install -d -m 0755 -o "$SERVICE_USER" -g "$SERVICE_USER" "$DROPIN_DIR"
+cat >"$DROPIN_DIR/30-package-env.conf" <<EOF
+[Service]
+EnvironmentFile=$RUNTIME_ENV
+EOF
+cat >"$DROPIN_DIR/40-patched-release.conf" <<EOF
+[Service]
+ExecStart=
+ExecStart=/usr/bin/node $CURRENT_LINK/bin/omniroute.mjs --port 20128 --no-open
+EOF
+chown "$SERVICE_USER:$SERVICE_USER" "$DROPIN_DIR/30-package-env.conf" "$DROPIN_DIR/40-patched-release.conf"
+chmod 0644 "$DROPIN_DIR/30-package-env.conf" "$DROPIN_DIR/40-patched-release.conf"
+
+"${SYSTEMCTL[@]}" daemon-reload
+"${SYSTEMCTL[@]}" restart "$SERVICE_NAME"
+for _ in {1..45}; do
+  if curl -fsS http://127.0.0.1:20128/api/auth/status >/dev/null; then
+    echo "BOOTSTRAP_OK=1"
+    echo "CURRENT=$(readlink -f "$CURRENT_LINK")"
+    echo "SERVICE_BACKUP=$backup"
+    exit 0
+  fi
+  sleep 1
+done
+
+echo "service did not recover; restoring original unit configuration" >&2
+rm -f "$DROPIN_DIR/40-patched-release.conf"
+cp -a "$backup/$SERVICE_NAME" "$UNIT_DIR/$SERVICE_NAME"
+if [[ -d "$backup/${SERVICE_NAME}.d" ]]; then
+  rm -rf "$DROPIN_DIR"
+  cp -a "$backup/${SERVICE_NAME}.d" "$DROPIN_DIR"
+fi
+"${SYSTEMCTL[@]}" daemon-reload
+"${SYSTEMCTL[@]}" restart "$SERVICE_NAME"
+exit 1

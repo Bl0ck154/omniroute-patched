@@ -1,0 +1,9 @@
+{
+  "upstreamRepository": "diegosouzapw/OmniRoute",
+  "upstreamVersion": "3.8.46",
+  "upstreamTag": "v3.8.46",
+  "upstreamCommit": "92715c8f2c2b0689f26e47e9f80bc54cca3a3576",
+  "patchRevision": 1,
+  "nodeVersion": "24"
+}
+

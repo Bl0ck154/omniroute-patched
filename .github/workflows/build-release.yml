@@ -1,0 +1,128 @@
+name: Build patched OmniRoute release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Upstream OmniRoute version without the v prefix
+        required: true
+        type: string
+      patch_revision:
+        description: Patch artifact revision
+        required: false
+        default: "1"
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: patched-release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      VERSION: ${{ inputs.version }}
+      PATCH_REVISION: ${{ inputs.patch_revision }}
+      JWT_SECRET: ci-build-jwt-secret-0123456789-abcdefghijklmnopqrstuvwxyz
+      API_KEY_SECRET: ci-build-api-secret-0123456789-abcdefghijklmnopqrstuvwxyz
+      INITIAL_PASSWORD: ci-only-password
+      REQUIRE_API_KEY: "true"
+      AUTH_COOKIE_SECURE: "false"
+      OMNIROUTE_DISABLE_BACKGROUND_SERVICES: "true"
+      DISABLE_SQLITE_AUTO_BACKUP: "true"
+      NEXT_TELEMETRY_DISABLED: "1"
+      OMNIROUTE_BUILD_MEMORY_MB: "8192"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone exact upstream tag
+        run: git clone --depth 1 --branch "v${VERSION}" https://github.com/diegosouzapw/OmniRoute.git upstream
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: upstream/package-lock.json
+
+      - name: Verify exact version
+        run: |
+          test "$(node -p "require('./upstream/package.json').version")" = "$VERSION"
+          git -C upstream rev-parse HEAD
+
+      - name: Apply source patch
+        run: bash scripts/apply-patch.sh upstream
+
+      - name: Install dependencies
+        working-directory: upstream
+        run: npm ci
+
+      - name: Lint patched component
+        working-directory: upstream
+        run: ./node_modules/.bin/eslint 'src/app/(dashboard)/dashboard/usage/components/ProviderLimits/QuotaCardGrid.tsx'
+
+      - name: Install Chromium
+        working-directory: upstream
+        run: npx playwright install --with-deps chromium
+
+      - name: Build official release
+        working-directory: upstream
+        run: npm run build:release
+
+      - name: Pack npm artifact
+        id: pack
+        run: |
+          mkdir -p artifacts
+          FILE=$(cd upstream && npm pack --pack-destination ../artifacts --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s)[0].filename))')
+          echo "file=$FILE" >> "$GITHUB_OUTPUT"
+          tar -tzf "artifacts/$FILE" | grep -q '^package/dist/'
+
+      - name: Install packed artifact
+        run: npm install --prefix smoke-root --omit=dev "./artifacts/${{ steps.pack.outputs.file }}"
+
+      - name: Test packaged launcher and dashboard
+        run: cp tests/packaged-smoke.mjs upstream/.patched-packaged-smoke.mjs && node upstream/.patched-packaged-smoke.mjs "$GITHUB_WORKSPACE/smoke-root/node_modules/omniroute"
+
+      - name: Create release manifest and checksum
+        run: |
+          node scripts/make-manifest.mjs "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/upstream" "$GITHUB_WORKSPACE/artifacts/${{ steps.pack.outputs.file }}" "$GITHUB_WORKSPACE/artifacts/manifest.json"
+          cd artifacts
+          sha256sum "${{ steps.pack.outputs.file }}" manifest.json > SHA256SUMS
+
+      - name: Publish verified release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v${VERSION}-quota-ui.${PATCH_REVISION}"
+          gh release create "$TAG" artifacts/* --title "OmniRoute ${VERSION} + Quota UI ${PATCH_REVISION}" --notes "Verified source-level patched release for exact upstream v${VERSION}. Built and tested by GitHub Actions; never deploy automatically."
+
+      - name: Close matching incompatibility issue
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue list --state open --search "OmniRoute ${VERSION} patch compatibility" --json number --jq '.[].number' | xargs -r -n1 gh issue close --comment "Verified release published successfully."
+
+  report-failure:
+    if: failure()
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Open or update compatibility issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          TITLE="OmniRoute ${VERSION} patch compatibility"
+          EXISTING=$(gh issue list --state open --search "$TITLE in:title" --json number --jq '.[0].number // empty')
+          BODY="The automated patched release did not pass all gates. Production was not touched. Inspect: ${RUN_URL}"
+          if [ -n "$EXISTING" ]; then gh issue comment "$EXISTING" --body "$BODY"; else gh issue create --title "$TITLE" --body "$BODY"; fi

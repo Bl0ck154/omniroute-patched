@@ -1,0 +1,32 @@
+name: Watch upstream OmniRoute
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  actions: write
+  contents: read
+  issues: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Detect and dispatch missing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(npm view omniroute version)
+          TAG="v${VERSION}-quota-ui.1"
+          if gh release view "$TAG" >/dev/null 2>&1; then echo "Release already exists: $TAG"; exit 0; fi
+          TITLE="OmniRoute ${VERSION} patch compatibility"
+          if gh issue list --state open --search "$TITLE in:title" --json number --jq 'length' | grep -qx '1'; then echo "Compatibility issue already open"; exit 0; fi
+          gh workflow run build-release.yml -f version="$VERSION" -f patch_revision=1
+          echo "Dispatched build for $VERSION"
+
