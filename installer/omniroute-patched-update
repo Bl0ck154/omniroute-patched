@@ -128,6 +128,7 @@ install_release() {
   npm install --prefix "$stage" --omit=dev --ignore-scripts=false "$artifact"
   [[ $(node -p "require('$stage/node_modules/omniroute/package.json').version") == "$version" ]] || die "installed version mismatch"
   grep -Rqs 'data-omniroute-quota-ui-patch' "$stage/node_modules/omniroute/dist/.build/next" || die "UI patch marker absent"
+  chown -R "$SERVICE_USER:$SERVICE_USER" "$stage"
   chmod 0755 "$stage"
   runuser -u "$SERVICE_USER" -- test -x "$stage/node_modules/omniroute/bin/omniroute.mjs" ||
     die "staged launcher is not accessible to $SERVICE_USER"
