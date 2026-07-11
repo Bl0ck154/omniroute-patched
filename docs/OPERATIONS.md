@@ -37,6 +37,9 @@ The normal user-facing request is:
 The package release and `DATA_DIR` are separate. Before a production switch,
 the updater creates a local database backup. Canary uses an isolated temporary
 `DATA_DIR`; it never opens the production SQLite database concurrently.
+Only active database files directly under `DATA_DIR` are copied. Existing
+`db_backups` and `migration-backups` are deliberately excluded to avoid
+recursively duplicating backup history and exhausting the disk.
 
 If a release introduces an irreversible database migration, automatic install
 must stop and require an explicit maintenance-window decision.
@@ -47,4 +50,3 @@ must stop and require an explicit maintenance-window decision.
 previous version and restarts the user service. Database restoration is not
 automatic because it can discard writes made after the upgrade; migration
 compatibility must be evaluated separately.
-
