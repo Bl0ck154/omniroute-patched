@@ -131,11 +131,19 @@ install_release() {
   chmod 0755 "$stage"
   runuser -u "$SERVICE_USER" -- test -x "$stage/node_modules/omniroute/bin/omniroute.mjs" ||
     die "staged launcher is not accessible to $SERVICE_USER"
+  if [[ -x "$stage/node_modules/@esbuild/linux-x64/bin/esbuild" ]]; then
+    runuser -u "$SERVICE_USER" -- "$stage/node_modules/@esbuild/linux-x64/bin/esbuild" --version >/dev/null ||
+      die "staged esbuild is not executable by $SERVICE_USER"
+  fi
   canary "$stage/node_modules/omniroute"
   mv "$stage" "$final"
   chmod 0755 "$final"
   runuser -u "$SERVICE_USER" -- test -x "$final/node_modules/omniroute/bin/omniroute.mjs" ||
     die "release launcher is not accessible to $SERVICE_USER"
+  if [[ -x "$final/node_modules/@esbuild/linux-x64/bin/esbuild" ]]; then
+    runuser -u "$SERVICE_USER" -- "$final/node_modules/@esbuild/linux-x64/bin/esbuild" --version >/dev/null ||
+      die "release esbuild is not executable by $SERVICE_USER"
+  fi
   CLEANUP_STAGE=
 
   previous=$(readlink -f "$CURRENT_LINK")
