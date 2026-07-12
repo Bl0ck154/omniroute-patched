@@ -93,7 +93,12 @@ jobs:
 
       - name: Test GPT-5.6 Responses normalization
         working-directory: upstream
-        run: npx vitest run tests/unit/responses-translation-fixes.test.ts
+        run: >-
+          node --import tsx/esm
+          --import ./open-sse/utils/setupPolyfill.ts
+          --import ./tests/_setup/isolateDataDir.ts
+          --test --test-force-exit
+          tests/unit/responses-translation-fixes.test.ts
 
       - name: Install Chromium
         working-directory: upstream
