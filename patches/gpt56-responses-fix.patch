@@ -7,7 +7,7 @@ new file mode 100644
 diff --git a/open-sse/utils/responsesInputNormalization.ts b/open-sse/utils/responsesInputNormalization.ts
 --- a/open-sse/utils/responsesInputNormalization.ts
 +++ b/open-sse/utils/responsesInputNormalization.ts
-@@ -10,6 +10,15 @@ function normalizeCodexMessageContentPart(part: unknown, role: string): unknown
+@@ -10,5 +10,14 @@ function normalizeCodexMessageContentPart(part: unknown, role: string): unknown
  
    const record = { ...(part as JsonRecord) };
    if (record.type === "text") record.type = textPartTypeForRole(role);
