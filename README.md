@@ -20,6 +20,8 @@ build a candidate. It never deploys to production automatically.
 ## Repository layout
 
 - `patches/quota-ui.patch` — canonical Quota UI source patch.
+- `patches/head-response-guard-packaging.patch` — temporary v3.8.47 packaging
+  fix that keeps the runtime sidecar required by `dist/server-ws.mjs`.
 - `.github/workflows/build-release.yml` — manual/versioned release builder.
 - `.github/workflows/watch-upstream.yml` — detects new upstream versions and
   opens an issue; it does not deploy.

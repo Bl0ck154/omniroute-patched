@@ -1,0 +1,16 @@
+diff --git a/scripts/build/pack-artifact-policy.ts b/scripts/build/pack-artifact-policy.ts
+--- a/scripts/build/pack-artifact-policy.ts
++++ b/scripts/build/pack-artifact-policy.ts
+@@ -8,5 +8,6 @@ export const APP_STAGING_ALLOWED_EXACT_PATHS: string[] = [
+   ".env.example",
+   "BUILD_SHA",
+   "docs/openapi.yaml",
++  "head-response-guard.cjs",
+   "http-method-guard.cjs",
+   "open-sse/mcp-server/server.js",
+@@ -112,4 +113,5 @@ export const PACK_ARTIFACT_REQUIRED_PATHS: string[] = [
+   "dist/responses-ws-proxy.mjs",
+   "dist/peer-stamp.mjs",
+   "dist/http-method-guard.cjs",
++  "dist/head-response-guard.cjs",
+   // #5452: regression guard — make check:pack-artifact fail loudly if the TLS

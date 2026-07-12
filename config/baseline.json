@@ -6,6 +6,7 @@
   "patchRevision": 2,
   "nodeVersion": "24",
   "patches": [
-    "patches/quota-ui.patch"
+    "patches/quota-ui.patch",
+    "patches/head-response-guard-packaging.patch"
   ]
 }

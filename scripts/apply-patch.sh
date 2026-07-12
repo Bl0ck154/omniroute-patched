@@ -22,4 +22,5 @@ done
 TARGET="$UPSTREAM/src/app/(dashboard)/dashboard/usage/components/ProviderLimits/QuotaCardGrid.tsx"
 grep -q 'data-omniroute-quota-ui-patch="source-v1"' "$TARGET"
 grep -q 'record.type === "input_text"' "$UPSTREAM/open-sse/utils/responsesInputNormalization.ts"
+grep -q '"head-response-guard.cjs"' "$UPSTREAM/scripts/build/pack-artifact-policy.ts"
 echo PATCH_SET_APPLIED=1
