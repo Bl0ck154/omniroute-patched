@@ -6,7 +6,6 @@
   "patchRevision": 2,
   "nodeVersion": "24",
   "patches": [
-    "patches/quota-ui.patch",
-    "patches/gpt56-responses-fix.patch"
+    "patches/quota-ui.patch"
   ]
 }

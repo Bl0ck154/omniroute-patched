@@ -20,8 +20,6 @@ build a candidate. It never deploys to production automatically.
 ## Repository layout
 
 - `patches/quota-ui.patch` — canonical Quota UI source patch.
-- `patches/gpt56-responses-fix.patch` — temporary source-level backport of
-  upstream #6932 for the pinned v3.8.47 release commit.
 - `.github/workflows/build-release.yml` — manual/versioned release builder.
 - `.github/workflows/watch-upstream.yml` — detects new upstream versions and
   opens an issue; it does not deploy.
