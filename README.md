@@ -1,9 +1,9 @@
 # OmniRoute Patched
 
-Version-pinned, source-level customization of the OmniRoute Provider Quota UI.
+Version-pinned, source-level customization of OmniRoute.
 
 This repository does **not** patch minified Next.js/Turbopack chunks. It applies
-`patches/quota-ui.patch` to an exact upstream OmniRoute tag, builds the complete
+the configured patch set to an exact upstream OmniRoute commit, builds the complete
 Linux npm release in GitHub Actions, tests the real packaged launcher, and
 publishes a versioned artifact.
 
@@ -19,7 +19,9 @@ build a candidate. It never deploys to production automatically.
 
 ## Repository layout
 
-- `patches/quota-ui.patch` — canonical human-reviewable source patch.
+- `patches/quota-ui.patch` — canonical Quota UI source patch.
+- `patches/gpt56-responses-fix.patch` — temporary source-level backport of
+  upstream #6932 for the pinned v3.8.47 release commit.
 - `.github/workflows/build-release.yml` — manual/versioned release builder.
 - `.github/workflows/watch-upstream.yml` — detects new upstream versions and
   opens an issue; it does not deploy.
@@ -29,8 +31,9 @@ build a candidate. It never deploys to production automatically.
 
 ## Supported baseline
 
-The initial patch is based on upstream `v3.8.46`. A release artifact is valid
-only for the exact upstream version and commit recorded in its manifest.
+The current patch set is pinned to upstream `release/v3.8.47` commit
+`38d6cd9955d55548dd1f85fff3ab2b477537659d`. A release artifact is valid only
+for the exact upstream version, ref, commit, and patch hashes recorded in its manifest.
 
 ## What happens on the next update
 

@@ -10,7 +10,17 @@ on:
       patch_revision:
         description: Patch artifact revision
         required: false
-        default: "1"
+        default: "2"
+        type: string
+      upstream_ref:
+        description: Upstream tag or branch; defaults to v<version>
+        required: false
+        default: ""
+        type: string
+      upstream_commit:
+        description: Optional exact 40-character upstream commit pin
+        required: false
+        default: ""
         type: string
 
 permissions:
@@ -28,6 +38,8 @@ jobs:
     env:
       VERSION: ${{ inputs.version }}
       PATCH_REVISION: ${{ inputs.patch_revision }}
+      UPSTREAM_REF: ${{ inputs.upstream_ref }}
+      UPSTREAM_COMMIT: ${{ inputs.upstream_commit }}
       JWT_SECRET: ci-build-jwt-secret-0123456789-abcdefghijklmnopqrstuvwxyz
       API_KEY_SECRET: ci-build-api-secret-0123456789-abcdefghijklmnopqrstuvwxyz
       INITIAL_PASSWORD: ci-only-password
@@ -42,8 +54,18 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Clone exact upstream tag
-        run: git clone --depth 1 --branch "v${VERSION}" https://github.com/diegosouzapw/OmniRoute.git upstream
+      - name: Clone exact upstream source
+        run: |
+          if [ -n "$UPSTREAM_COMMIT" ]; then
+            [[ "$UPSTREAM_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+            git init upstream
+            git -C upstream remote add origin https://github.com/diegosouzapw/OmniRoute.git
+            git -C upstream fetch --depth 1 origin "$UPSTREAM_COMMIT"
+            git -C upstream checkout --detach FETCH_HEAD
+          else
+            REF="${UPSTREAM_REF:-v${VERSION}}"
+            git clone --depth 1 --branch "$REF" https://github.com/diegosouzapw/OmniRoute.git upstream
+          fi
 
       - uses: actions/setup-node@v4
         with:
@@ -54,7 +76,9 @@ jobs:
       - name: Verify exact version
         run: |
           test "$(node -p "require('./upstream/package.json').version")" = "$VERSION"
-          git -C upstream rev-parse HEAD
+          ACTUAL_COMMIT=$(git -C upstream rev-parse HEAD)
+          if [ -n "$UPSTREAM_COMMIT" ]; then test "$ACTUAL_COMMIT" = "$UPSTREAM_COMMIT"; fi
+          echo "UPSTREAM_SOURCE=${UPSTREAM_REF:-v${VERSION}}@$ACTUAL_COMMIT"
 
       - name: Apply source patch
         run: bash scripts/apply-patch.sh upstream
@@ -66,6 +90,10 @@ jobs:
       - name: Lint patched component
         working-directory: upstream
         run: ./node_modules/.bin/eslint 'src/app/(dashboard)/dashboard/usage/components/ProviderLimits/QuotaCardGrid.tsx'
+
+      - name: Test GPT-5.6 Responses normalization
+        working-directory: upstream
+        run: npx vitest run tests/unit/responses-translation-fixes.test.ts
 
       - name: Install Chromium
         working-directory: upstream
@@ -126,7 +154,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="v${VERSION}-quota-ui.${PATCH_REVISION}"
-          gh release create "$TAG" artifacts/* --title "OmniRoute ${VERSION} + Quota UI ${PATCH_REVISION}" --notes "Verified source-level patched release for exact upstream v${VERSION}. Built and tested by GitHub Actions; never deploy automatically."
+          gh release create "$TAG" artifacts/* --title "OmniRoute ${VERSION} + patches ${PATCH_REVISION}" --notes "Verified source-level patched release for ${UPSTREAM_REF:-v${VERSION}} at ${UPSTREAM_COMMIT:-tag head}. Includes Quota UI and the configured source patch set. Built and tested by GitHub Actions; never deploy automatically."
 
       - name: Close matching incompatibility issue
         if: success()

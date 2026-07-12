@@ -21,9 +21,10 @@ The normal user-facing request is:
 
 ## Required CI gates
 
-- Exact upstream tag and commit recorded.
+- Exact upstream ref and commit recorded.
 - Source patch applies with no fuzz or rejected hunks.
 - Targeted ESLint passes.
+- GPT-5.6 Responses normalization regression test passes when its backport is configured.
 - Official release build succeeds.
 - `npm pack` contains the standalone `dist` application.
 - Packaged `bin/omniroute.mjs` starts, not only `next start`.

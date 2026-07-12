@@ -23,10 +23,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION=$(npm view omniroute version)
-          TAG="v${VERSION}-quota-ui.1"
+          BASELINE_VERSION=$(node -p "require('./config/baseline.json').upstreamVersion")
+          PATCH_REVISION=$(node -p "require('./config/baseline.json').patchRevision")
+          if ! node -e 'const [next,current]=process.argv.slice(1); process.exit(next.localeCompare(current, undefined, {numeric:true}) > 0 ? 0 : 1)' "$VERSION" "$BASELINE_VERSION"; then
+            echo "No newer stable upstream release: npm=$VERSION baseline=$BASELINE_VERSION"
+            exit 0
+          fi
+          TAG="v${VERSION}-quota-ui.${PATCH_REVISION}"
           if gh release view "$TAG" >/dev/null 2>&1; then echo "Release already exists: $TAG"; exit 0; fi
           TITLE="OmniRoute ${VERSION} patch compatibility"
           if gh issue list --state open --search "$TITLE in:title" --json number --jq 'length' | grep -qx '1'; then echo "Compatibility issue already open"; exit 0; fi
-          gh workflow run build-release.yml -f version="$VERSION" -f patch_revision=1
+          gh workflow run build-release.yml -f version="$VERSION" -f patch_revision="$PATCH_REVISION"
           echo "Dispatched build for $VERSION"
-
