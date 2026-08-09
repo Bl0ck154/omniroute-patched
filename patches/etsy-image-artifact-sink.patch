@@ -1,5 +1,5 @@
 diff --git a/open-sse/handlers/chatCore.ts b/open-sse/handlers/chatCore.ts
-index e134a744f..39a1d48a3 100644
+index e134a744f..db3218f68 100644
 --- a/open-sse/handlers/chatCore.ts
 +++ b/open-sse/handlers/chatCore.ts
 @@ -179,6 +179,11 @@ import {
@@ -37,7 +37,7 @@ index e134a744f..39a1d48a3 100644
          compressionComboKey,
 @@ -2235,7 +2241,17 @@ export async function handleChatCore({
 
-  let onPipelineStreamError: streamFailure.PipelineStreamErrorHandler | null = null;
+   let onPipelineStreamError: streamFailure.PipelineStreamErrorHandler | null = null;
    let onClientDisconnectFinalize:
 -    ((event: { reason: string; duration: number }) => boolean) | null = null;
 +    | ((event: { reason: string; duration: number }) => boolean)
@@ -52,7 +52,7 @@ index e134a744f..39a1d48a3 100644
 +    correlationId,
 +  });
 
-  // Create stream controller for disconnect detection
+   // Create stream controller for disconnect detection
    const streamController = createStreamController({
 @@ -2264,7 +2280,9 @@ export async function handleChatCore({
      model,
@@ -64,7 +64,7 @@ index e134a744f..39a1d48a3 100644
 +    clientAbortSignal: codexImageArtifactCapture ? null : clientRawRequest?.signal,
    });
 
-  const dedupRequestBody = { ...translatedBody, model: `${provider}/${model}`, stream };
+   const dedupRequestBody = { ...translatedBody, model: `${provider}/${model}`, stream };
 @@ -3339,7 +3357,13 @@ export async function handleChatCore({
            // otherwise degenerate into a 429 rate-limit storm). Connection stays
            // active since only the specific model is unavailable. (#6827)
@@ -115,7 +115,7 @@ index e134a744f..39a1d48a3 100644
 
 @@ -4485,7 +4535,7 @@ export async function handleChatCore({
 
-  return {
+   return {
      success: true,
 -    response: new Response(finalStream, {
 +    response: new Response(clientStream, {
@@ -124,7 +124,7 @@ index e134a744f..39a1d48a3 100644
    };
 diff --git a/src/lib/usage/codexImageArtifactSink.ts b/src/lib/usage/codexImageArtifactSink.ts
 new file mode 100644
-index 000000000..8040cfee2
+index 000000000..3a013f4f3
 --- /dev/null
 +++ b/src/lib/usage/codexImageArtifactSink.ts
 @@ -0,0 +1,421 @@
@@ -551,7 +551,7 @@ index 000000000..8040cfee2
 +}
 diff --git a/tests/unit/codex-image-artifact-sink.test.ts b/tests/unit/codex-image-artifact-sink.test.ts
 new file mode 100644
-index 000000000..5648c8c55
+index 000000000..bd335979c
 --- /dev/null
 +++ b/tests/unit/codex-image-artifact-sink.test.ts
 @@ -0,0 +1,245 @@
