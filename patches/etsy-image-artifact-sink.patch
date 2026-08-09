@@ -554,7 +554,7 @@ new file mode 100644
 index 000000000..bd335979c
 --- /dev/null
 +++ b/tests/unit/codex-image-artifact-sink.test.ts
-@@ -0,0 +1,245 @@
+@@ -0,0 +1,249 @@
 +import assert from "node:assert/strict";
 +import fs from "node:fs";
 +import os from "node:os";
@@ -611,6 +611,10 @@ index 000000000..bd335979c
 +    correlationId: "corr-123",
 +    ...overrides,
 +  });
++}
++
++function tinyPng(): Buffer {
++  return Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
 +}
 +
 +test("artifact capture is disabled unless every EtsyTrello scope matches", () => {
