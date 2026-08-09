@@ -1,5 +1,5 @@
 diff --git a/open-sse/handlers/chatCore.ts b/open-sse/handlers/chatCore.ts
-index e134a744f..db3218f68 100644
+index e134a744f..39a1d48a3 100644
 --- a/open-sse/handlers/chatCore.ts
 +++ b/open-sse/handlers/chatCore.ts
 @@ -179,6 +179,11 @@ import {
@@ -37,7 +37,7 @@ index e134a744f..db3218f68 100644
          compressionComboKey,
 @@ -2235,7 +2241,17 @@ export async function handleChatCore({
 
-   let onPipelineStreamError: streamFailure.PipelineStreamErrorHandler | null = null;
+  let onPipelineStreamError: streamFailure.PipelineStreamErrorHandler | null = null;
    let onClientDisconnectFinalize:
 -    ((event: { reason: string; duration: number }) => boolean) | null = null;
 +    | ((event: { reason: string; duration: number }) => boolean)
@@ -52,7 +52,7 @@ index e134a744f..db3218f68 100644
 +    correlationId,
 +  });
 
-   // Create stream controller for disconnect detection
+  // Create stream controller for disconnect detection
    const streamController = createStreamController({
 @@ -2264,7 +2280,9 @@ export async function handleChatCore({
      model,
@@ -64,7 +64,7 @@ index e134a744f..db3218f68 100644
 +    clientAbortSignal: codexImageArtifactCapture ? null : clientRawRequest?.signal,
    });
 
-   const dedupRequestBody = { ...translatedBody, model: `${provider}/${model}`, stream };
+  const dedupRequestBody = { ...translatedBody, model: `${provider}/${model}`, stream };
 @@ -3339,7 +3357,13 @@ export async function handleChatCore({
            // otherwise degenerate into a 429 rate-limit storm). Connection stays
            // active since only the specific model is unavailable. (#6827)
@@ -80,34 +80,7 @@ index e134a744f..db3218f68 100644
            console.warn(
              `[provider] Node ${errorConnectionId} model not found (${statusCode}) for ${currentModel} - locking model for ${Math.ceil(notFoundCooldownMs / 1000)}s (connection stays active)`
            );
-@@ -4238,6 +4262,26 @@ export async function handleChatCore({
-     const cacheUsageLogMeta = buildCacheUsageLogMeta(streamUsage);
-     const streamConnectionId = getCurrentConnectionId();
-
-+    if (normalizedStreamStatus === 200 && codexImageArtifactCapture) {
-+      try {
-+        const artifacts = persistCodexImageArtifacts({
-+          capture: codexImageArtifactCapture,
-+          responseBody: clientPayload ?? streamResponseBody ?? providerPayload,
-+        });
-+        for (const artifact of artifacts) {
-+          log?.info?.(
-+            "ETSY_IMAGE_ARTIFACT",
-+            `stored artifactId=${artifact.artifactId || "none"} correlationId=${artifact.correlationId} imageCallId=${artifact.imageCallId} format=${artifact.format} bytes=${artifact.sizeBytes} sha256=${artifact.sha256}`
-+          );
-+        }
-+      } catch (error) {
-+        log?.error?.(
-+          "ETSY_IMAGE_ARTIFACT",
-+          `store failed correlationId=${codexImageArtifactCapture.correlationId}: ${error instanceof Error ? error.message : String(error)}`
-+        );
-+      }
-+    }
-+
-     if (normalizedStreamStatus === 200) {
-       void maybeSyncClaudeExtraUsageState({
-         provider,
-@@ -4477,6 +4521,18 @@ export async function handleChatCore({
+@@ -4477,6 +4501,32 @@ export async function handleChatCore({
      responseHeaders,
    });
 
@@ -115,20 +88,34 @@ index e134a744f..db3218f68 100644
 +  if (codexImageArtifactCapture) {
 +    const [downstreamStream, artifactStream] = finalStream.tee();
 +    clientStream = downstreamStream;
-+    void drainCodexImageArtifactStream(artifactStream).catch((error) => {
-+      log?.error?.(
-+        "ETSY_IMAGE_ARTIFACT",
-+        `drain failed correlationId=${codexImageArtifactCapture.correlationId}: ${error instanceof Error ? error.message : String(error)}`
-+      );
-+    });
++    void drainCodexImageArtifactStream(artifactStream)
++      .then((responseBody) => {
++        if (!responseBody) return;
++        const artifacts = persistCodexImageArtifacts({
++          capture: codexImageArtifactCapture,
++          responseBody,
++        });
++        for (const artifact of artifacts) {
++          log?.info?.(
++            "ETSY_IMAGE_ARTIFACT",
++            `stored artifactId=${artifact.artifactId || "none"} correlationId=${artifact.correlationId} imageCallId=${artifact.imageCallId} format=${artifact.format} bytes=${artifact.sizeBytes} sha256=${artifact.sha256}`
++          );
++        }
++      })
++      .catch((error) => {
++        log?.error?.(
++          "ETSY_IMAGE_ARTIFACT",
++          `drain/store failed correlationId=${codexImageArtifactCapture.correlationId}: ${error instanceof Error ? error.message : String(error)}`
++        );
++      });
 +  }
 +
    // ── Gamification event (fire-and-forget) ──
    await emitRequestGamificationEvent({ apiKeyId: apiKeyInfo?.id, model, provider });
 
-@@ -4485,7 +4541,7 @@ export async function handleChatCore({
+@@ -4485,7 +4535,7 @@ export async function handleChatCore({
 
-   return {
+  return {
      success: true,
 -    response: new Response(finalStream, {
 +    response: new Response(clientStream, {
@@ -137,10 +124,10 @@ index e134a744f..db3218f68 100644
    };
 diff --git a/src/lib/usage/codexImageArtifactSink.ts b/src/lib/usage/codexImageArtifactSink.ts
 new file mode 100644
-index 000000000..3a013f4f3
+index 000000000..8040cfee2
 --- /dev/null
 +++ b/src/lib/usage/codexImageArtifactSink.ts
-@@ -0,0 +1,380 @@
+@@ -0,0 +1,421 @@
 +import crypto from "node:crypto";
 +import fs from "node:fs";
 +import path from "node:path";
@@ -157,6 +144,7 @@ index 000000000..3a013f4f3
 +const SAFE_ID_PATTERN = /[^A-Za-z0-9._-]+/g;
 +const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 +const MAX_ENCODED_BYTES = Math.ceil(MAX_IMAGE_BYTES / 3) * 4 + 8;
++const MAX_STREAM_CAPTURE_BYTES = MAX_ENCODED_BYTES + 2 * 1024 * 1024;
 +const RETENTION_MS = 72 * 60 * 60 * 1000;
 +const MAX_STORE_BYTES = 2 * 1024 * 1024 * 1024;
 +const CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
@@ -508,14 +496,54 @@ index 000000000..3a013f4f3
 +  }
 +}
 +
++function parseCompletedResponseBody(data: Buffer): unknown {
++  const text = data.toString("utf8").trim();
++  if (!text) return null;
++  try {
++    return JSON.parse(text);
++  } catch {}
++
++  let completed: unknown = null;
++  for (const block of text.split(/\r?\n\r?\n/)) {
++    const payloadText = block
++      .split(/\r?\n/)
++      .filter((line) => line.startsWith("data:"))
++      .map((line) => line.slice(5).trimStart())
++      .join("\n")
++      .trim();
++    if (!payloadText || payloadText === "[DONE]") continue;
++    try {
++      const payload = JSON.parse(payloadText) as Record<string, unknown>;
++      if (
++        payload.type === "response.completed" &&
++        payload.response &&
++        typeof payload.response === "object"
++      ) {
++        completed = payload.response;
++      } else if (payload.object === "response") {
++        completed = payload;
++      }
++    } catch {}
++  }
++  return completed;
++}
++
 +export async function drainCodexImageArtifactStream(
 +  stream: ReadableStream<Uint8Array>
-+): Promise<void> {
++): Promise<unknown> {
 +  const reader = stream.getReader();
++  const chunks: Buffer[] = [];
++  let totalBytes = 0;
 +  try {
 +    for (;;) {
-+      const { done } = await reader.read();
-+      if (done) return;
++      const { done, value } = await reader.read();
++      if (done) return parseCompletedResponseBody(Buffer.concat(chunks, totalBytes));
++      if (!value?.byteLength) continue;
++      totalBytes += value.byteLength;
++      if (totalBytes > MAX_STREAM_CAPTURE_BYTES) {
++        throw new Error("Codex image response exceeds the private capture limit");
++      }
++      chunks.push(Buffer.from(value));
 +    }
 +  } finally {
 +    reader.releaseLock();
@@ -523,10 +551,10 @@ index 000000000..3a013f4f3
 +}
 diff --git a/tests/unit/codex-image-artifact-sink.test.ts b/tests/unit/codex-image-artifact-sink.test.ts
 new file mode 100644
-index 000000000..bd335979c
+index 000000000..5648c8c55
 --- /dev/null
 +++ b/tests/unit/codex-image-artifact-sink.test.ts
-@@ -0,0 +1,183 @@
+@@ -0,0 +1,245 @@
 +import assert from "node:assert/strict";
 +import fs from "node:fs";
 +import os from "node:os";
@@ -680,8 +708,70 @@ index 000000000..bd335979c
 +  const [downstream, privateBranch] = source.tee();
 +  const drained = drainCodexImageArtifactStream(privateBranch);
 +  await downstream.cancel("client timeout");
-+  await drained;
++  assert.equal(await drained, null);
 +  assert.equal(sent, 4);
++});
++
++test("private tee returns a complete JSON response after downstream cancellation", async () => {
++  const png = tinyPng();
++  const response = JSON.stringify({
++    id: "resp_live",
++    object: "response",
++    output: [
++      {
++        id: "ig_live",
++        type: "image_generation_call",
++        output_format: "png",
++        result: png.toString("base64"),
++      },
++    ],
++  });
++  const bytes = Buffer.from(response);
++  let offset = 0;
++  const source = new ReadableStream<Uint8Array>({
++    pull(controller) {
++      if (offset >= bytes.length) {
++        controller.close();
++        return;
++      }
++      const end = Math.min(offset + 7, bytes.length);
++      controller.enqueue(bytes.subarray(offset, end));
++      offset = end;
++    },
++  });
++  const [downstream, privateBranch] = source.tee();
++  const captured = drainCodexImageArtifactStream(privateBranch);
++  await downstream.cancel("client timeout");
++  assert.deepEqual(await captured, JSON.parse(response));
++});
++
++test("private tee extracts response.completed from SSE across chunk boundaries", async () => {
++  const response = {
++    id: "resp_sse",
++    object: "response",
++    output: [
++      {
++        id: "ig_sse",
++        type: "image_generation_call",
++        output_format: "png",
++        result: tinyPng().toString("base64"),
++      },
++    ],
++  };
++  const bytes = Buffer.from(
++    `event: response.created\ndata: ${JSON.stringify({ type: "response.created" })}\n\n` +
++      `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response })}\n\n` +
++      "data: [DONE]\n\n"
++  );
++  const stream = new ReadableStream<Uint8Array>({
++    start(controller) {
++      for (let offset = 0; offset < bytes.length; offset += 11) {
++        controller.enqueue(bytes.subarray(offset, offset + 11));
++      }
++      controller.close();
++    },
++  });
++  assert.deepEqual(await drainCodexImageArtifactStream(stream), response);
 +});
 +
 +test("cleanup enforces retention and total byte cap by deleting oldest attempts", () => {
