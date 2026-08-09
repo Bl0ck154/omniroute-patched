@@ -3,10 +3,12 @@
   "upstreamVersion": "3.8.47",
   "upstreamRef": "release/v3.8.47",
   "upstreamCommit": "38d6cd9955d55548dd1f85fff3ab2b477537659d",
-  "patchRevision": 2,
+  "patchRevision": 4,
   "nodeVersion": "24",
   "patches": [
     "patches/quota-ui.patch",
-    "patches/head-response-guard-packaging.patch"
+    "patches/head-response-guard-packaging.patch",
+    "patches/runtime-fixes.patch",
+    "patches/etsy-image-artifact-sink.patch"
   ]
 }

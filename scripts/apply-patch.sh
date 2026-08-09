@@ -23,4 +23,7 @@ TARGET="$UPSTREAM/src/app/(dashboard)/dashboard/usage/components/ProviderLimits/
 grep -q 'data-omniroute-quota-ui-patch="source-v1"' "$TARGET"
 grep -q 'record.type === "input_text"' "$UPSTREAM/open-sse/utils/responsesInputNormalization.ts"
 grep -q '"head-response-guard.cjs"' "$UPSTREAM/scripts/build/pack-artifact-policy.ts"
+grep -Fq 'const IMAGE_SIZE_PATTERN = /^(?:1K|2K|4K)$/' "$UPSTREAM/open-sse/handlers/imageGeneration.ts"
+grep -Fq 'resolveCodexImageArtifactCapture' "$UPSTREAM/open-sse/handlers/chatCore.ts"
+grep -Fq 'MAX_STORE_BYTES = 2 * 1024 * 1024 * 1024' "$UPSTREAM/src/lib/usage/codexImageArtifactSink.ts"
 echo PATCH_SET_APPLIED=1
