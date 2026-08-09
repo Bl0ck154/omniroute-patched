@@ -158,8 +158,26 @@ jobs:
           echo "file=$FILE" >> "$GITHUB_OUTPUT"
           tar -tzf "artifacts/$FILE" | grep -q '^package/dist/'
 
+      - name: Reclaim build workspace for packaged smoke
+        run: |
+          test "$(realpath upstream)" = "$GITHUB_WORKSPACE/upstream"
+          PLAYWRIGHT_SMOKE_VERSION=$(node -p "require('./upstream/node_modules/playwright/package.json').version")
+          JOSE_SMOKE_VERSION=$(node -p "require('./upstream/node_modules/jose/package.json').version")
+          echo "PLAYWRIGHT_SMOKE_VERSION=$PLAYWRIGHT_SMOKE_VERSION" >> "$GITHUB_ENV"
+          echo "JOSE_SMOKE_VERSION=$JOSE_SMOKE_VERSION" >> "$GITHUB_ENV"
+          rm -rf \
+            "$GITHUB_WORKSPACE/upstream/node_modules" \
+            "$GITHUB_WORKSPACE/upstream/dist" \
+            "$GITHUB_WORKSPACE/upstream/.build" \
+            "$GITHUB_WORKSPACE/upstream/.next"
+          df -h "$GITHUB_WORKSPACE"
+
       - name: Install packed artifact
-        run: npm install --prefix smoke-root --omit=dev "./artifacts/${{ steps.pack.outputs.file }}"
+        run: >-
+          npm install --prefix smoke-root --omit=dev
+          "./artifacts/${{ steps.pack.outputs.file }}"
+          "playwright@$PLAYWRIGHT_SMOKE_VERSION"
+          "jose@$JOSE_SMOKE_VERSION"
 
       - name: Preserve candidate artifact for diagnostics
         uses: actions/upload-artifact@v4
@@ -169,7 +187,7 @@ jobs:
           retention-days: 3
 
       - name: Test packaged launcher and dashboard
-        run: cp tests/packaged-smoke.mjs upstream/.patched-packaged-smoke.mjs && node upstream/.patched-packaged-smoke.mjs "$GITHUB_WORKSPACE/smoke-root/node_modules/omniroute"
+        run: cp tests/packaged-smoke.mjs smoke-root/packaged-smoke.mjs && node smoke-root/packaged-smoke.mjs "$GITHUB_WORKSPACE/smoke-root/node_modules/omniroute"
 
       - name: Create release manifest and checksum
         run: |
