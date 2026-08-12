@@ -4,3 +4,16 @@ work/
 *.tgz
 *.sha256
 
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.local
+*.pem
+*.key
+*.ppk
+id_rsa*
+id_ed25519*
+credentials.json
+secrets.json
+
