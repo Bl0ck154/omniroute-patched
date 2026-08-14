@@ -8,30 +8,106 @@ on:
 permissions:
   actions: write
   contents: read
-  issues: read
+  issues: write
 
 jobs:
   dispatch:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-      - name: Detect and dispatch missing release
+
+      - name: Detect stable upstream readiness
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          VERSION=$(npm view omniroute version)
+          set -euo pipefail
+
+          UPSTREAM_REPO=$(node -p "require('./config/baseline.json').upstreamRepository")
           BASELINE_VERSION=$(node -p "require('./config/baseline.json').upstreamVersion")
           PATCH_REVISION=$(node -p "require('./config/baseline.json').patchRevision")
-          if ! node -e 'const [next,current]=process.argv.slice(1); process.exit(next.localeCompare(current, undefined, {numeric:true}) > 0 ? 0 : 1)' "$VERSION" "$BASELINE_VERSION"; then
-            echo "No newer stable upstream release: npm=$VERSION baseline=$BASELINE_VERSION"
+          MINIMUM_VERSION=$(node -p "require('./config/upgrade-policy.json').minimumVersion")
+
+          STABLE_TAG=$(gh api "repos/${UPSTREAM_REPO}/releases/latest" --jq '.tag_name')
+          VERSION=${STABLE_TAG#v}
+
+          newer_than() {
+            node -e 'const [next,current]=process.argv.slice(1); process.exit(next.localeCompare(current, undefined, {numeric:true}) > 0 ? 0 : 1)' "$1" "$2"
+          }
+          at_least() {
+            node -e 'const [value,min]=process.argv.slice(1); process.exit(value.localeCompare(min, undefined, {numeric:true}) >= 0 ? 0 : 1)' "$1" "$2"
+          }
+
+          if ! newer_than "$VERSION" "$BASELINE_VERSION"; then
+            echo "No newer stable upstream release: stable=$VERSION baseline=$BASELINE_VERSION"
             exit 0
           fi
+
+          if ! at_least "$VERSION" "$MINIMUM_VERSION"; then
+            echo "Stable $VERSION is newer than baseline but below upgrade-policy minimum $MINIMUM_VERSION"
+            exit 0
+          fi
+
+          # Gemini 3.7 is a hard readiness requirement for the next baseline.
+          # Check both current Antigravity catalog locations so a harmless source
+          # split does not make the watcher depend on one exact file.
+          TMP=$(mktemp -d)
+          trap 'rm -rf "$TMP"' EXIT
+          for path in \
+            open-sse/config/antigravityModelAliases.ts \
+            open-sse/config/agyModels.ts
+          do
+            gh api "repos/${UPSTREAM_REPO}/contents/${path}?ref=${STABLE_TAG}" --jq '.content' 2>/dev/null \
+              | base64 -d >>"$TMP/catalog.txt" 2>/dev/null || true
+          done
+
+          READY=1
+          if ! grep -Eq 'gemini-3\.7' "$TMP/catalog.txt"; then
+            READY=0
+          fi
+
+          READINESS_TITLE="OmniRoute ${VERSION} upgrade readiness"
+          if [ "$READY" -ne 1 ]; then
+            BODY=$(cat <<EOF
+          Stable upstream ${STABLE_TAG} is newer than the current ${BASELINE_VERSION} baseline, but it does not yet satisfy `config/upgrade-policy.json`.
+
+          Missing required capability: Antigravity Gemini 3.7 in the released upstream source.
+
+          No patched release build was dispatched and production was not touched.
+          EOF
+          )
+            EXISTING=$(gh issue list --state open --search "$READINESS_TITLE in:title" --json number --jq '.[0].number // empty')
+            if [ -n "$EXISTING" ]; then
+              gh issue comment "$EXISTING" --body "$BODY"
+            else
+              gh issue create --title "$READINESS_TITLE" --body "$BODY"
+            fi
+            echo "Stable ${STABLE_TAG} is not upgrade-ready"
+            exit 0
+          fi
+
+          # Close a stale readiness issue once the hard requirement appears.
+          EXISTING=$(gh issue list --state open --search "$READINESS_TITLE in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            gh issue close "$EXISTING" --comment "Required Gemini 3.7 capability is present in ${STABLE_TAG}; compatibility build can proceed."
+          fi
+
           TAG="v${VERSION}-quota-ui.${PATCH_REVISION}"
-          if gh release view "$TAG" >/dev/null 2>&1; then echo "Release already exists: $TAG"; exit 0; fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Patched release already exists: $TAG"
+            exit 0
+          fi
+
           TITLE="OmniRoute ${VERSION} patch compatibility"
-          if gh issue list --state open --search "$TITLE in:title" --json number --jq 'length' | grep -qx '1'; then echo "Compatibility issue already open"; exit 0; fi
-          gh workflow run build-release.yml -f version="$VERSION" -f patch_revision="$PATCH_REVISION"
-          echo "Dispatched build for $VERSION"
+          if gh issue list --state open --search "$TITLE in:title" --json number --jq 'length' | grep -qx '1'; then
+            echo "Compatibility issue already open"
+            exit 0
+          fi
+
+          gh workflow run build-release.yml \
+            -f version="$VERSION" \
+            -f patch_revision="$PATCH_REVISION" \
+            -f upstream_ref="$STABLE_TAG"
+          echo "Dispatched compatibility build for stable ${STABLE_TAG}"
