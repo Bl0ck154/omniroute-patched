@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$ROOT"
+
 fail() {
   echo "PUBLIC_HYGIENE_ERROR: $*" >&2
   exit 1
