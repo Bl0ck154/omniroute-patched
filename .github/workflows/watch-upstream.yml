@@ -70,14 +70,10 @@ jobs:
 
           READINESS_TITLE="OmniRoute ${VERSION} upgrade readiness"
           if [ "$READY" -ne 1 ]; then
-            BODY=$(cat <<EOF
-          Stable upstream ${STABLE_TAG} is newer than the current ${BASELINE_VERSION} baseline, but it does not yet satisfy `config/upgrade-policy.json`.
-
-          Missing required capability: Antigravity Gemini 3.7 in the released upstream source.
-
-          No patched release build was dispatched and production was not touched.
-          EOF
-          )
+            BODY=$(printf '%s\n\n%s\n\n%s\n' \
+              "Stable upstream ${STABLE_TAG} is newer than the current ${BASELINE_VERSION} baseline, but it does not yet satisfy config/upgrade-policy.json." \
+              "Missing required capability: Antigravity Gemini 3.7 in the released upstream source." \
+              "No patched release build was dispatched and production was not touched.")
             EXISTING=$(gh issue list --state open --search "$READINESS_TITLE in:title" --json number --jq '.[0].number // empty')
             if [ -n "$EXISTING" ]; then
               gh issue comment "$EXISTING" --body "$BODY"
