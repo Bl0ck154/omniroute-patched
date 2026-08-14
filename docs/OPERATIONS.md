@@ -1,37 +1,59 @@
 # Operations runbook
 
-## User request
+## Two separate operations
 
-The normal user-facing request is:
+Repository preparation and production deployment are different tasks.
+
+### Prepare/update the patched repository
+
+1. Read `config/upgrade-policy.json` and the current `config/baseline.json`.
+2. Select an immutable upstream GitHub release/tag that satisfies the required capabilities.
+3. Record the exact upstream commit before publishing anything.
+4. Compare current upstream behavior with each local patch; drop behavior that is already upstream.
+5. Port only still-useful deltas in a branch. Never patch compiled Next.js chunks.
+6. Run public-repository hygiene checks before applying/building patches.
+7. Run the full packaged release test matrix.
+8. Publish a verified GitHub Release only if every gate passes.
+9. Stop there unless production deployment was separately and explicitly requested.
+
+### Deploy an already-prepared release
+
+A normal explicit deployment request can be phrased as:
 
 > Онови OmniRoute з нашого репо.
 
-## Agent workflow
+Then:
 
 1. Read the currently installed OmniRoute version and build manifest.
-2. Find an exact matching verified release in `Bl0ck154/omniroute-patched`.
-3. If no release exists, dispatch `build-release.yml` for the target version.
-4. If the source patch conflicts or tests fail, stop. Adapt the TSX patch in a
-   branch, review the diff, and rerun CI. Never patch compiled chunks.
-5. Download the `.tgz`, manifest, and checksums through authenticated GitHub CLI.
-6. Upload them to a root-only temporary directory on the VPS.
-7. Run `/usr/local/sbin/omniroute-patched-update install ...`.
-8. Verify the production dashboard, `/v1/models` API-key guard, service state,
-   and runtime logs. Keep the previous release until the user confirms the UI.
+2. Select the exact matching verified release from `Bl0ck154/omniroute-patched`.
+3. Download the `.tgz`, manifest, and checksums from GitHub.
+4. Upload them to a root-only temporary directory on the VPS.
+5. Run `/usr/local/sbin/omniroute-patched-update install ...`.
+6. Verify the production dashboard, `/v1/models` API-key guard, service state,
+   and runtime logs.
+7. Keep the previous release available for rollback until the new version is accepted.
 
-## Required CI gates
+A GitHub Release is not deployment. Repository workflows must not SSH to or
+silently modify production.
 
+## Required release gates
+
+- Public-repository hygiene scan passes.
 - Exact upstream ref and commit recorded.
-- Source patch applies with no fuzz or rejected hunks.
-- Targeted ESLint passes.
-- GPT-5.6 Responses normalization regression test passes when its backport is configured.
-- Official release build succeeds.
+- Source patches apply with no fuzz or rejected hunks.
+- Every configured patch file exists.
+- Targeted lint/type checks pass for touched upstream code.
+- Existing compatibility assertions remain valid or are deliberately migrated.
+- Official Next release build succeeds.
+- CLI release build succeeds.
 - `npm pack` contains the standalone `dist` application.
+- The real packed artifact installs into a clean smoke root.
 - Packaged `bin/omniroute.mjs` starts, not only `next start`.
 - Unauthenticated `/v1/models` returns `401`.
 - Authenticated `/dashboard/quota` returns `200`.
-- Browser hydration renders `Quota UI patch` with mocked provider/quota data.
-- No browser `pageerror`, console error, `TypeError`, or `ReferenceError`.
+- Browser hydration succeeds with no `pageerror`, console error, `TypeError`, or `ReferenceError`.
+- Legacy Quota UI marker assertions are required only while that patch is configured.
+- Provider/image adapter tests pass when those optional adapters are enabled.
 
 ## Database safety
 
@@ -39,15 +61,16 @@ The package release and `DATA_DIR` are separate. Before a production switch,
 the updater creates a local database backup. Canary uses an isolated temporary
 `DATA_DIR`; it never opens the production SQLite database concurrently.
 Only active database files directly under `DATA_DIR` are copied. Existing
-`db_backups` and `migration-backups` are deliberately excluded to avoid
-recursively duplicating backup history and exhausting the disk.
+backup histories are deliberately excluded to avoid recursive duplication and
+disk exhaustion.
 
-If a release introduces an irreversible database migration, automatic install
-must stop and require an explicit maintenance-window decision.
+If a release introduces an irreversible database migration, installation must
+stop for an explicit compatibility decision. Package rollback and database
+rollback are not the same operation.
 
 ## Rollback
 
 `omniroute-patched-update rollback` switches `/opt/omniroute-current` to the
-previous version and restarts the user service. Database restoration is not
+previous package and restarts the user service. Database restoration is not
 automatic because it can discard writes made after the upgrade; migration
 compatibility must be evaluated separately.
