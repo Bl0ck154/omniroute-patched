@@ -79,9 +79,15 @@ jobs:
             exit 1
           fi
 
+          PUBLISHABLE_SOURCE=false
+          if [[ "$UPSTREAM_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            PUBLISHABLE_SOURCE=true
+          fi
+
           echo "UPSTREAM_REF=$UPSTREAM_REF" >> "$GITHUB_ENV"
           echo "UPSTREAM_COMMIT=$UPSTREAM_COMMIT" >> "$GITHUB_ENV"
-          echo "Resolved upstream source: ref=${UPSTREAM_REF:-none} commit=${UPSTREAM_COMMIT:-none}"
+          echo "PUBLISHABLE_SOURCE=$PUBLISHABLE_SOURCE" >> "$GITHUB_ENV"
+          echo "Resolved upstream source: ref=${UPSTREAM_REF:-none} commit=${UPSTREAM_COMMIT:-none} publishable=$PUBLISHABLE_SOURCE"
 
       - name: Clone exact upstream source
         run: |
@@ -199,17 +205,22 @@ jobs:
           cd artifacts
           sha256sum "${{ steps.pack.outputs.file }}" manifest.json > SHA256SUMS
 
+      - name: Keep preview build candidate-only
+        if: env.PUBLISHABLE_SOURCE != 'true'
+        run: echo "Source ref $UPSTREAM_REF is not an immutable vX.Y.Z release tag; candidate artifact only, no GitHub Release will be published."
+
       - name: Publish verified release
+        if: env.PUBLISHABLE_SOURCE == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="v${VERSION}-overlay.${PATCH_REVISION}"
           gh release create "$TAG" artifacts/* \
             --title "OmniRoute ${VERSION} + overlay ${PATCH_REVISION}" \
-            --notes "Verified source-level overlay for ${UPSTREAM_REF:-detached} at $(git -C upstream rev-parse HEAD). Includes the configured Cloudflare Workers AI and AI Horde image adapters. Built and tested by GitHub Actions; never deploys automatically."
+            --notes "Verified source-level overlay for ${UPSTREAM_REF} at $(git -C upstream rev-parse HEAD). Includes the configured Cloudflare Workers AI and AI Horde image adapters. Built and tested by GitHub Actions; never deploys automatically."
 
       - name: Close matching incompatibility issue
-        if: success()
+        if: success() && env.PUBLISHABLE_SOURCE == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
