@@ -1,35 +1,47 @@
 # Patch lifecycle
 
 Patches in this repository are tied to an exact upstream baseline. A patch is not
-assumed to be valid merely because a later OmniRoute version has a similar file.
+assumed to remain valid merely because a later OmniRoute version has a similar
+file or provider.
 
-## Current baseline patches
+## Active 3.8.50 migration patches
 
-- `quota-ui.patch` — legacy Quota UI customization for the 3.8.47 baseline.
-- `head-response-guard-packaging.patch` — legacy 3.8.47 packaging fix.
+`config/baseline.json` currently applies exactly two independent source patches:
 
-Both remain configured in `config/baseline.json` so the current verified baseline
-stays reproducible.
+- `cloudflare-images.patch` — Cloudflare Workers AI image generation through
+  OmniRoute's existing OpenAI-compatible image route. The adapter reuses the
+  `cloudflare-ai` API token and Account ID connection.
+- `aihorde-images.patch` — AI Horde native async image generation, including
+  anonymous-key fallback, bounded polling/cancel behavior, explicit model routing,
+  and SSRF-safe conversion of remote results to `b64_json`.
 
-## Next baseline
+Keep these separate. If upstream implements one provider natively, delete that
+patch without forcing unrelated churn in the other adapter.
 
-Do not copy these patches into a new baseline automatically.
+## Retired patches
 
-For each patch:
+The migration deliberately removes these old 3.8.47 patch files from the active
+tree; their history remains available in Git:
+
+- `quota-ui.patch` — retired because upstream 3.8.50 now provides the important
+  quota filtering, sorting, layout, visibility, and expandable-group behavior.
+  The old hard-coded Gemini CLI plan override must not return.
+- `head-response-guard-packaging.patch` — retired because the packaging fix is
+  already present upstream. `scripts/apply-patch.sh` still verifies that upstream
+  retains `head-response-guard.cjs` in its packaging policy.
+
+## Porting rule
+
+For every upstream baseline change:
 
 1. inspect the selected immutable upstream release;
-2. identify which behavior is already upstream;
-3. drop obsolete hunks/features;
-4. reimplement only the still-missing behavior against the new source;
+2. identify which local behavior is already upstream;
+3. delete obsolete patches rather than rebasing them mechanically;
+4. port only behavior still missing from upstream;
 5. add focused tests for every retained delta;
-6. update `config/baseline.json` only after the new patch set is green.
+6. run `git apply --check` for the complete patch sequence;
+7. update `config/baseline.json` only after the new patch set is reproducible.
 
-The HEAD response guard patch should disappear on newer upstream releases where
-that packaging fix is already present.
-
-The old Quota UI patch should be replaced by a much smaller semantic extras patch
-if any desired UI behavior remains missing. In particular, do not carry the old
-hard-coded Gemini CLI plan override forward.
-
-Provider/image extensions should be kept separate from quota UI so upstreaming or
-removing one feature does not force unrelated patch churn.
+The 3.8.50 migration currently uses a fixed preview commit for compatibility work.
+It is not final until an immutable upstream `v3.8.50` tag is published and the
+patch sequence is revalidated against that tag commit.
