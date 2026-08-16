@@ -1,95 +1,112 @@
-# Next OmniRoute baseline refresh
+# OmniRoute 3.8.50 migration and finalization
 
-This document defines the preparation work for the next `omniroute-patched`
-baseline. It intentionally separates repository preparation from production
-installation.
+This document tracks the current migration from the old 3.8.47 overlay to the
+3.8.50 line. Repository preparation and production installation remain separate
+operations.
 
-## Target selection
+## Current preview pin
 
-Use an immutable upstream GitHub release/tag, not a moving `release/*` branch,
-unless a temporary preview build is explicitly requested for testing.
+Compatibility work is pinned to:
 
-The preferred next baseline must:
+- upstream version: `3.8.50`;
+- upstream ref: `release/v3.8.50`;
+- upstream commit: `6d9336088c48fe7d9c858afb4e95ff28932c047a`.
 
-1. be at least the version in `config/upgrade-policy.json`;
-2. expose working Antigravity Gemini 3.7 support in the upstream source;
-3. have a fixed upstream commit recorded in `config/baseline.json`;
-4. pass the packaged launcher, dashboard, auth guard, and browser smoke tests.
+This commit contains the required Antigravity Gemini 3.7 work, but the ref is a
+moving release branch. It is suitable for preparing and testing the overlay, not
+for declaring a final production baseline.
 
-A preview branch can be inspected for compatibility, but it must not silently
-replace the production baseline.
+## What changed from 3.8.47
 
-## Patch migration rules
+### Quota UI patch retired
 
-### Quota UI
+Do not reapply the legacy `quota-ui.patch`.
 
-Do not reapply the legacy 3.8.47 `quota-ui.patch` wholesale.
+Upstream 3.8.50 now covers the important quota UX that the local patch originally
+added or motivated: filtering, deterministic provider ordering, smart account
+sorting, compact/full layouts, expandable provider groups, quota visibility,
+status summaries, tier/provider/environment filters, and reset-credit handling.
 
-Newer upstream releases already provide substantial quota UX: filtering,
-provider ordering, compact/full layouts, expandable provider sections, account
-sorting, visibility controls, and improved plan resolution.
+The old hard-coded Gemini CLI `free -> pro` override is permanently dropped.
 
-When the baseline advances, compare the desired user experience against stock
-upstream and carry only still-useful deltas. Candidate extras are:
+### HEAD response guard patch retired
 
-- explicit manual sorting modes (available / empty / priority / name), if still useful;
-- a true list view with compact quota bars, if upstream compact cards are insufficient;
-- optional hiding/showing of disabled connections;
-- explicit priority display where it improves routing visibility.
+`head-response-guard.cjs` is already retained by the upstream packaging policy,
+so the 3.8.47 packaging patch is no longer configured. The build still verifies
+the upstream packaging contract fail-closed.
 
-Drop the old hard-coded Gemini CLI `free -> pro` plan override. Newer upstream
-plan resolution should be the source of truth.
+### Gemini 3.7 uses upstream
 
-### HEAD response guard packaging patch
+The selected upstream source contains Antigravity Gemini 3.7 support and live
+authenticated Antigravity chat-model discovery. No local Gemini 3.7 patch is
+carried.
 
-`patches/head-response-guard-packaging.patch` exists for the 3.8.47 baseline.
-The fix is upstream in newer releases. Remove this patch from the configured
-patch list as soon as the baseline advances to a version that contains the
-upstream packaging fix.
+### New image overlay patches
 
-### Gemini 3.7
+Two features remain local because upstream does not expose them through the image
+route in this baseline:
 
-Prefer upstream support once it is released and verified. If upstream ships a
-stable release before the integration is complete, a small isolated compatibility
-patch may be considered, but it must have focused tests for:
+- `patches/cloudflare-images.patch`;
+- `patches/aihorde-images.patch`.
 
-- public model discovery;
-- tier mapping / upstream model id translation;
-- thinking-level translation;
-- quota bucket display;
-- account-specific provisioning failures.
+They are isolated from each other and from quota UI so either can be removed when
+upstream gains equivalent support.
 
-Do not treat a Google-side `404 Requested entity was not found` as proof that the
-router mapping is wrong when the account itself has not yet been provisioned.
+## Finalization trigger
 
-## Image provider extensions
+When upstream publishes the immutable `v3.8.50` release/tag:
 
-Cloudflare Workers AI and AI Horde are useful chat providers upstream but their
-image APIs require dedicated adapters. See `docs/IMAGE_ADAPTERS.md`.
+1. resolve the exact tag commit;
+2. compare it with the current preview commit;
+3. change `config/baseline.json` from `release/v3.8.50` to the immutable tag and
+   exact tag commit;
+4. apply both image patches with `git apply --check` in configured order;
+5. adapt only conflicts caused by final upstream changes;
+6. rerun the focused image-adapter tests and existing upstream regression guard;
+7. run the full Next + CLI build;
+8. `npm pack` and install the actual artifact into the smoke root;
+9. verify both overlay markers exist in packed `dist`;
+10. run launcher/auth/quota/browser smoke with no page/runtime errors;
+11. publish `v3.8.50-overlay.<revision>` only after every gate is green;
+12. merge the migration PR only after the immutable baseline is recorded.
 
-These adapters should remain separate from the baseline refresh so they can be
-ported or dropped independently if upstream later implements equivalent support.
+No VPS deployment belongs to this checklist.
 
-## Test matrix for the next baseline
+## Future baseline rule
 
-Required before publishing a patched release:
+After 3.8.50 is finalized, future compatibility builds should continue to:
 
+- use immutable upstream releases for publishable artifacts;
+- require released Antigravity Gemini 3.7-or-newer capability;
+- prefer upstream implementations over local patches;
+- keep provider-specific image adapters isolated;
+- fail before expensive build/browser work when source patches or focused unit
+  tests fail.
+
+## Required release gates
+
+- public-repository hygiene scan;
 - exact upstream version/ref/commit verification;
-- source patches apply with zero fuzz;
-- targeted lint/type checks for every touched upstream module;
-- upstream regression tests related to modified providers/routes;
+- every configured source patch exists;
+- complete patch sequence passes `git apply --check` before mutation;
+- Cloudflare Workers AI adapter unit tests;
+- AI Horde adapter unit tests;
+- lint for both local handler modules and tests;
+- GPT-5.6 Responses normalization regression guard;
 - complete Next release build;
 - CLI release build;
-- `npm pack` contains the standalone runtime;
-- installation of the real packed artifact into a clean smoke root;
+- `npm pack` contains standalone `dist` runtime;
+- packed artifact installs into a clean smoke root;
+- `cloudflare-workers-ai-image` marker present in packed `dist`;
+- `aihorde-image` marker present in packed `dist`;
 - unauthenticated `/v1/models` returns `401`;
 - authenticated quota dashboard returns `200`;
-- browser page hydrates with no `pageerror`, `TypeError`, `ReferenceError`, or console error;
-- provider-specific image adapter tests when those adapters are enabled.
+- stock upstream quota UI hydrates and exposes the Full/Compact layout control;
+- no browser `pageerror`, console error, `TypeError`, `ReferenceError`, or internal
+  server error in smoke logs.
 
 ## Production boundary
 
-Publishing a release is not deployment. No workflow in this repository should
-SSH into a VPS or automatically modify a running OmniRoute installation.
-Production installation remains a separate explicit action through the local
-updater.
+A verified GitHub Release is still not deployment. Repository workflows do not
+SSH to the VPS and do not modify a running OmniRoute installation. Production
+installation remains a separate explicit request through the local updater.
