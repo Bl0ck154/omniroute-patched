@@ -50,7 +50,7 @@ jobs:
             exit 0
           fi
 
-          # Gemini 3.7 is a hard readiness requirement for the next baseline.
+          # Gemini 3.7 remains a hard readiness requirement for future baselines.
           # Check both current Antigravity catalog locations so a harmless source
           # split does not make the watcher depend on one exact file.
           TMP=$(mktemp -d)
@@ -73,7 +73,7 @@ jobs:
             BODY=$(printf '%s\n\n%s\n\n%s\n' \
               "Stable upstream ${STABLE_TAG} is newer than the current ${BASELINE_VERSION} baseline, but it does not yet satisfy config/upgrade-policy.json." \
               "Missing required capability: Antigravity Gemini 3.7 in the released upstream source." \
-              "No patched release build was dispatched and production was not touched.")
+              "No overlay build was dispatched and production was not touched.")
             EXISTING=$(gh issue list --state open --search "$READINESS_TITLE in:title" --json number --jq '.[0].number // empty')
             if [ -n "$EXISTING" ]; then
               gh issue comment "$EXISTING" --body "$BODY"
@@ -84,15 +84,14 @@ jobs:
             exit 0
           fi
 
-          # Close a stale readiness issue once the hard requirement appears.
           EXISTING=$(gh issue list --state open --search "$READINESS_TITLE in:title" --json number --jq '.[0].number // empty')
           if [ -n "$EXISTING" ]; then
             gh issue close "$EXISTING" --comment "Required Gemini 3.7 capability is present in ${STABLE_TAG}; compatibility build can proceed."
           fi
 
-          TAG="v${VERSION}-quota-ui.${PATCH_REVISION}"
+          TAG="v${VERSION}-overlay.${PATCH_REVISION}"
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Patched release already exists: $TAG"
+            echo "Overlay release already exists: $TAG"
             exit 0
           fi
 
@@ -106,4 +105,4 @@ jobs:
             -f version="$VERSION" \
             -f patch_revision="$PATCH_REVISION" \
             -f upstream_ref="$STABLE_TAG"
-          echo "Dispatched compatibility build for stable ${STABLE_TAG}"
+          echo "Dispatched overlay compatibility build for stable ${STABLE_TAG}"
