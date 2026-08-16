@@ -1,0 +1,13 @@
+{
+  "minimumVersion": "3.8.50",
+  "requireImmutableRelease": true,
+  "requiredCapabilities": [
+    "antigravity-gemini-3.7"
+  ],
+  "plannedOptionalCapabilities": [
+    "cloudflare-images",
+    "aihorde-images"
+  ],
+  "productionDeploy": "manual-only",
+  "notes": "Advance baseline only to an immutable upstream release/tag that satisfies required capabilities. Optional image adapters may be carried by this overlay if upstream still lacks them."
+}
