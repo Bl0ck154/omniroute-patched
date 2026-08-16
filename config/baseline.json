@@ -1,12 +1,12 @@
 {
   "upstreamRepository": "diegosouzapw/OmniRoute",
-  "upstreamVersion": "3.8.47",
-  "upstreamRef": "release/v3.8.47",
-  "upstreamCommit": "38d6cd9955d55548dd1f85fff3ab2b477537659d",
-  "patchRevision": 5,
+  "upstreamVersion": "3.8.50",
+  "upstreamRef": "release/v3.8.50",
+  "upstreamCommit": "6d9336088c48fe7d9c858afb4e95ff28932c047a",
+  "patchRevision": 1,
   "nodeVersion": "24",
   "patches": [
-    "patches/quota-ui.patch",
-    "patches/head-response-guard-packaging.patch"
+    "patches/cloudflare-images.patch",
+    "patches/aihorde-images.patch"
   ]
 }
