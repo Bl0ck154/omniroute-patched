@@ -113,26 +113,51 @@ restore_package() {
   rm -f "$STATE_DIR/pending"
 }
 
+verify_overlay_markers() {
+  local package_root=$1 schema=$2
+  if [[ $schema == 1 ]]; then
+    grep -Rqs 'data-omniroute-quota-ui-patch' "$package_root/dist/.build/next" ||
+      die "legacy UI patch marker absent"
+    return
+  fi
+
+  grep -Rqs 'cloudflare-workers-ai-image' "$package_root/dist" ||
+    die "Cloudflare image overlay marker absent"
+  grep -Rqs 'aihorde-image' "$package_root/dist" ||
+    die "AI Horde image overlay marker absent"
+}
+
 install_release() {
   local artifact=${1:?artifact required} manifest=${2:?manifest required}
   [[ -f $artifact && -f $manifest ]] || die "artifact or manifest not found"
-  [[ $(json "$manifest" '.schemaVersion') == 1 ]] || die "unsupported manifest"
+
+  local schema version revision expected actual release final stage previous db_backup
+  schema=$(json "$manifest" '.schemaVersion')
+  [[ $schema == 1 || $schema == 2 ]] || die "unsupported manifest"
   [[ $(json "$manifest" '.package') == omniroute ]] || die "wrong package"
   [[ $(json "$manifest" '.platform') == linux-x64 ]] || die "wrong platform"
-  local version revision expected actual release final stage previous db_backup
+  if [[ $schema == 2 ]]; then
+    [[ $(json "$manifest" '.overlay') == omniroute-patched ]] || die "wrong overlay"
+  fi
+
   version=$(json "$manifest" '.upstreamVersion')
   revision=$(json "$manifest" '.patchRevision')
   expected=$(json "$manifest" '.artifactSha256')
   actual=$(sha256sum "$artifact" | awk '{print $1}')
   [[ $actual == "$expected" ]] || die "artifact checksum mismatch"
-  release="${version}-quota-ui.${revision}"
+
+  if [[ $schema == 1 ]]; then
+    release="${version}-quota-ui.${revision}"
+  else
+    release="${version}-overlay.${revision}"
+  fi
   final="$RELEASES_DIR/$release"
   [[ ! -e $final ]] || die "release already exists: $final"
   stage=$(mktemp -d "$RELEASES_DIR/.stage-${release}.XXXXXX")
   CLEANUP_STAGE=$stage
   npm install --prefix "$stage" --omit=dev --ignore-scripts=false "$artifact"
   [[ $(node -p "require('$stage/node_modules/omniroute/package.json').version") == "$version" ]] || die "installed version mismatch"
-  grep -Rqs 'data-omniroute-quota-ui-patch' "$stage/node_modules/omniroute/dist/.build/next" || die "UI patch marker absent"
+  verify_overlay_markers "$stage/node_modules/omniroute" "$schema"
   chown -R "$SERVICE_USER:$SERVICE_USER" "$stage"
   chmod 0755 "$stage"
   runuser -u "$SERVICE_USER" -- test -x "$stage/node_modules/omniroute/bin/omniroute.mjs" ||
