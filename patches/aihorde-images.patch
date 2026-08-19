@@ -1,0 +1,417 @@
+diff --git a/open-sse/config/imageRegistry.ts b/open-sse/config/imageRegistry.ts
+index d4ea6a0..e670419 100644
+--- a/open-sse/config/imageRegistry.ts
++++ b/open-sse/config/imageRegistry.ts
+@@ -12,6 +12,22 @@
+     supportedSizes: ["1024x1024", "1024x1792", "1792x1024"],
+   },
+ 
++  // AI Horde image generation uses the native asynchronous Horde API rather
++  // than its OpenAI-compatible text facade. A configured AI Horde key is used
++  // when available; otherwise the adapter falls back to Horde's documented
++  // anonymous key. `auto` lets the Horde scheduler choose an available model,
++  // while explicit `aihorde/<worker model name>` routes are also accepted by
++  // parseImageModel without requiring a static catalog entry.
++  aihorde: {
++    id: "aihorde",
++    baseUrl: "https://aihorde.net/api/v2/generate",
++    authType: "none",
++    authHeader: "apikey",
++    format: "aihorde-image",
++    models: [{ id: "auto", name: "Any available AI Horde image model" }],
++    supportedSizes: ["512x512", "768x768", "1024x1024"],
++  },
++
+   // Adobe Firefly (unofficial) — IMS access_token (clio-playground-web) or browser
+   // Cookie from firefly.adobe.com. Async 3P image generate + poll.
+   // Model list = static fallback from models/discovery capture; live discovery
+diff --git a/open-sse/handlers/imageGeneration.ts b/open-sse/handlers/imageGeneration.ts
+index e0e1def..63b6924 100644
+--- a/open-sse/handlers/imageGeneration.ts
++++ b/open-sse/handlers/imageGeneration.ts
+@@ -5,6 +5,7 @@
+ import { handleMinimaxImageGeneration } from "./imageGeneration/providers/minimax.ts";
+ import { handleAdobeFireflyImageGeneration } from "./imageGeneration/providers/adobeFirefly.ts";
+ import { handleAlibabaImageGeneration } from "./imageGeneration/providers/alibabaImage.ts";
++import { handleAiHordeImageGeneration } from "./imageGeneration/providers/aiHorde.ts";
+ import {
+   applyPollinationsAnonymousFallback,
+   reportPollinationsAnonOutcome,
+@@ -32,6 +33,18 @@ import {
+     });
+   }
+ 
++  if (providerConfig.format === "aihorde-image") {
++    return handleAiHordeImageGeneration({
++      model,
++      provider,
++      providerConfig,
++      body,
++      credentials,
++      log,
++      signal,
++    });
++  }
++
+   if (providerConfig.format === "adobe-firefly-image") {
+     return handleAdobeFireflyImageGeneration({
+       model,
+diff --git a/open-sse/handlers/imageGeneration/providers/aiHorde.ts b/open-sse/handlers/imageGeneration/providers/aiHorde.ts
+new file mode 100644
+index 0000000..3d39156
+--- /dev/null
++++ b/open-sse/handlers/imageGeneration/providers/aiHorde.ts
+@@ -0,0 +1,302 @@
++import { saveCallLog } from "@/lib/usageDb";
++import { fetchRemoteImage } from "@/shared/network/remoteImageFetch";
++import { sanitizeErrorMessage, sanitizeUpstreamDetails } from "../../../utils/error.ts";
++import { sleep } from "../../../utils/sleep.ts";
++
++const AI_HORDE_ANONYMOUS_KEY = "0000000000";
++const DEFAULT_TIMEOUT_MS = 300_000;
++const DEFAULT_POLL_INTERVAL_MS = 2_000;
++const MAX_IMAGES_PER_REQUEST = 4;
++
++function normalizeInteger(value: unknown, fallback: number, min: number, max: number): number {
++  const parsed = Number(value);
++  if (!Number.isFinite(parsed)) return fallback;
++  return Math.min(max, Math.max(min, Math.trunc(parsed)));
++}
++
++function alignDimension(value: number): number {
++  return Math.max(64, Math.min(2048, Math.round(value / 64) * 64));
++}
++
++export function normalizeAiHordeSize(value: unknown): { width: number; height: number } {
++  if (typeof value !== "string") return { width: 512, height: 512 };
++  const match = value.trim().match(/^(\d{2,4})x(\d{2,4})$/i);
++  if (!match) return { width: 512, height: 512 };
++  return {
++    width: alignDimension(Number(match[1])),
++    height: alignDimension(Number(match[2])),
++  };
++}
++
++export function buildAiHordeImageRequest(
++  model: string,
++  body: Record<string, unknown>
++): Record<string, unknown> {
++  const prompt = typeof body.prompt === "string" ? body.prompt : String(body.prompt ?? "");
++  const { width, height } = normalizeAiHordeSize(body.size);
++  const params: Record<string, unknown> = {
++    n: normalizeInteger(body.n, 1, 1, MAX_IMAGES_PER_REQUEST),
++    width,
++    height,
++    steps: normalizeInteger(body.steps, 20, 1, 50),
++  };
++
++  if (body.seed !== undefined && body.seed !== null && String(body.seed).trim()) {
++    params.seed = String(body.seed);
++  }
++
++  const request: Record<string, unknown> = {
++    prompt,
++    params,
++    r2: true,
++    shared: false,
++    slow_workers: true,
++    allow_downgrade: true,
++  };
++  if (model && model !== "auto") request.models = [model];
++  return request;
++}
++
++function parseJsonOrNull(value: string): unknown | null {
++  try {
++    return JSON.parse(value);
++  } catch {
++    return null;
++  }
++}
++
++function hordeError(payload: unknown, fallback: string): string {
++  if (payload && typeof payload === "object") {
++    const object = payload as Record<string, unknown>;
++    for (const key of ["message", "error", "detail"]) {
++      const value = object[key];
++      if (typeof value === "string" && value.trim()) return value.trim();
++    }
++  }
++  return fallback;
++}
++
++function imageDataValue(value: unknown): string | null {
++  return typeof value === "string" && value.trim() ? value.trim() : null;
++}
++
++function dataUrlBase64(value: string): string | null {
++  const marker = ";base64,";
++  const index = value.indexOf(marker);
++  return index >= 0 ? value.slice(index + marker.length) : null;
++}
++
++async function bestEffortCancel(baseUrl: string, id: string, apiKey: string) {
++  try {
++    await fetch(`${baseUrl}/status/${encodeURIComponent(id)}`, {
++      method: "DELETE",
++      headers: { apikey: apiKey },
++    });
++  } catch {}
++}
++
++async function normalizeAiHordeGeneration(
++  generation: Record<string, unknown>,
++  wantsBase64: boolean,
++  signal: AbortSignal | null
++) {
++  const img = imageDataValue(generation.img);
++  if (!img) throw new Error("AI Horde completed without an image URL");
++
++  const embedded = dataUrlBase64(img);
++  if (embedded) return { b64_json: embedded };
++
++  if (!wantsBase64) return { url: img };
++
++  // Horde normally returns R2 URLs. Fetch through OmniRoute's bounded SSRF-safe
++  // media helper rather than calling an arbitrary worker URL directly.
++  const remote = await fetchRemoteImage(img, {
++    enforceHttps: true,
++    pinDns: true,
++    signal: signal || undefined,
++    timeoutMs: 15_000,
++    maxBytes: 20 * 1024 * 1024,
++  });
++  return { b64_json: remote.buffer.toString("base64") };
++}
++
++export async function handleAiHordeImageGeneration({
++  model,
++  provider,
++  providerConfig,
++  body,
++  credentials,
++  log,
++  signal = null,
++}) {
++  const startTime = Date.now();
++  const apiKey = credentials?.apiKey || credentials?.accessToken || AI_HORDE_ANONYMOUS_KEY;
++  const baseUrl = String(providerConfig.baseUrl || "https://aihorde.net/api/v2/generate").replace(
++    /\/+$/,
++    ""
++  );
++  const prompt = typeof body.prompt === "string" ? body.prompt : String(body.prompt ?? "");
++  const requestBody = buildAiHordeImageRequest(model, body);
++  const timeoutMs = normalizeInteger(body.timeout_ms, DEFAULT_TIMEOUT_MS, 10_000, 600_000);
++  const pollIntervalMs = normalizeInteger(
++    body.poll_interval_ms,
++    DEFAULT_POLL_INTERVAL_MS,
++    1_000,
++    10_000
++  );
++
++  log?.info?.(
++    "IMAGE",
++    `${provider}/${model} (aihorde) | prompt: "${prompt.slice(0, 60)}..." | timeout=${timeoutMs}`
++  );
++
++  let generationId: string | null = null;
++  try {
++    const submit = await fetch(`${baseUrl}/async`, {
++      method: "POST",
++      headers: {
++        "Content-Type": "application/json",
++        apikey: apiKey,
++      },
++      body: JSON.stringify(requestBody),
++      signal: signal || undefined,
++    });
++    const submitText = await submit.text();
++    const submitPayload = parseJsonOrNull(submitText);
++    if (!submit.ok) {
++      const safe = sanitizeUpstreamDetails(submitPayload ?? submitText);
++      const message = hordeError(
++        submitPayload,
++        sanitizeErrorMessage(submitText) || `HTTP ${submit.status}`
++      );
++      saveCallLog({
++        method: "POST",
++        path: "/v1/images/generations",
++        status: submit.status,
++        model: `${provider}/${model}`,
++        provider,
++        duration: Date.now() - startTime,
++        error: (typeof safe === "string" ? safe : message).slice(0, 500),
++      }).catch(() => {});
++      return { success: false, status: submit.status, error: message };
++    }
++
++    if (submitPayload && typeof submitPayload === "object") {
++      const id = (submitPayload as Record<string, unknown>).id;
++      generationId = typeof id === "string" && id.trim() ? id.trim() : null;
++    }
++    if (!generationId) {
++      return { success: false, status: 502, error: "AI Horde did not return a generation id" };
++    }
++
++    const deadline = Date.now() + timeoutMs;
++    while (Date.now() < deadline) {
++      if (signal?.aborted) {
++        await bestEffortCancel(baseUrl, generationId, apiKey);
++        return { success: false, status: 499, error: "AI Horde image request was cancelled" };
++      }
++
++      const check = await fetch(`${baseUrl}/check/${encodeURIComponent(generationId)}`, {
++        method: "GET",
++        headers: { apikey: apiKey },
++        signal: signal || undefined,
++      });
++      const checkText = await check.text();
++      const checkPayload = parseJsonOrNull(checkText);
++      if (!check.ok) {
++        return {
++          success: false,
++          status: check.status,
++          error: hordeError(
++            checkPayload,
++            sanitizeErrorMessage(checkText) || `AI Horde check failed (${check.status})`
++          ),
++        };
++      }
++      if (
++        checkPayload &&
++        typeof checkPayload === "object" &&
++        (checkPayload as Record<string, unknown>).done === true
++      ) {
++        break;
++      }
++      await sleep(pollIntervalMs);
++    }
++
++    if (Date.now() >= deadline) {
++      await bestEffortCancel(baseUrl, generationId, apiKey);
++      return { success: false, status: 504, error: "AI Horde image generation timed out" };
++    }
++
++    const status = await fetch(`${baseUrl}/status/${encodeURIComponent(generationId)}`, {
++      method: "GET",
++      headers: { apikey: apiKey },
++      signal: signal || undefined,
++    });
++    const statusText = await status.text();
++    const statusPayload = parseJsonOrNull(statusText);
++    if (!status.ok) {
++      return {
++        success: false,
++        status: status.status,
++        error: hordeError(
++          statusPayload,
++          sanitizeErrorMessage(statusText) || `AI Horde status failed (${status.status})`
++        ),
++      };
++    }
++
++    const generations =
++      statusPayload && typeof statusPayload === "object"
++        ? (statusPayload as Record<string, unknown>).generations
++        : null;
++    if (!Array.isArray(generations) || generations.length === 0) {
++      return { success: false, status: 502, error: "AI Horde completed without image results" };
++    }
++
++    const wantsBase64 = body.response_format === "b64_json";
++    const images = await Promise.all(
++      generations.map((generation) =>
++        normalizeAiHordeGeneration(
++          generation && typeof generation === "object"
++            ? (generation as Record<string, unknown>)
++            : {},
++          wantsBase64,
++          signal
++        )
++      )
++    );
++
++    saveCallLog({
++      method: "POST",
++      path: "/v1/images/generations",
++      status: 200,
++      model: `${provider}/${model}`,
++      provider,
++      duration: Date.now() - startTime,
++      responseBody: { images_count: images.length },
++    }).catch(() => {});
++
++    return {
++      success: true,
++      data: {
++        created: Math.floor(Date.now() / 1000),
++        data: images,
++      },
++    };
++  } catch (err) {
++    if (generationId) await bestEffortCancel(baseUrl, generationId, apiKey);
++    const message = sanitizeErrorMessage((err as Error)?.message || String(err));
++    log?.error?.("IMAGE", `${provider} fetch error: ${message}`);
++    saveCallLog({
++      method: "POST",
++      path: "/v1/images/generations",
++      status: 502,
++      model: `${provider}/${model}`,
++      provider,
++      duration: Date.now() - startTime,
++      error: message.slice(0, 500),
++    }).catch(() => {});
++    return { success: false, status: 502, error: `Image provider error: ${message}` };
++  }
++}
+diff --git a/tests/unit/aihorde-image.test.ts b/tests/unit/aihorde-image.test.ts
+new file mode 100644
+index 0000000..52f2746
+--- /dev/null
++++ b/tests/unit/aihorde-image.test.ts
+@@ -0,0 +1,45 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++
++import {
++  buildAiHordeImageRequest,
++  normalizeAiHordeSize,
++} from "../../open-sse/handlers/imageGeneration/providers/aiHorde.ts";
++
++test("AI Horde image adapter normalizes image dimensions to Horde-friendly multiples", () => {
++  assert.deepEqual(normalizeAiHordeSize("1000x750"), { width: 1024, height: 768 });
++  assert.deepEqual(normalizeAiHordeSize("bad"), { width: 512, height: 512 });
++});
++
++test("AI Horde auto mode leaves worker model selection to the Horde scheduler", () => {
++  const request = buildAiHordeImageRequest("auto", {
++    prompt: "cat",
++    n: 99,
++    steps: 80,
++    size: "1024x768",
++  });
++  assert.equal("models" in request, false);
++  assert.deepEqual(request.params, {
++    n: 4,
++    width: 1024,
++    height: 768,
++    steps: 50,
++  });
++});
++
++test("AI Horde explicit model pins the requested worker model and preserves seed", () => {
++  const request = buildAiHordeImageRequest("stable_diffusion", {
++    prompt: "cat",
++    n: 2,
++    steps: 12,
++    seed: 42,
++  });
++  assert.deepEqual(request.models, ["stable_diffusion"]);
++  assert.deepEqual(request.params, {
++    n: 2,
++    width: 512,
++    height: 512,
++    steps: 12,
++    seed: "42",
++  });
++});

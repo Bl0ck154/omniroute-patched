@@ -17,6 +17,11 @@ mapfile -t PATCHES < <(
   ' "$ROOT/config/baseline.json"
 )
 
+[[ ${#PATCHES[@]} -gt 0 ]] || {
+  echo "baseline has no configured source patches" >&2
+  exit 1
+}
+
 for patch in "${PATCHES[@]}"; do
   [[ -f "$ROOT/$patch" ]] || { echo "configured patch missing: $patch" >&2; exit 1; }
   git -C "$UPSTREAM" apply --check "$ROOT/$patch"
@@ -24,24 +29,26 @@ for patch in "${PATCHES[@]}"; do
   echo "PATCH_APPLIED=$patch"
 done
 
-has_patch() {
-  local wanted=$1 patch
-  for patch in "${PATCHES[@]}"; do
-    [[ "$patch" == "$wanted" ]] && return 0
-  done
-  return 1
-}
+# Overlay-specific integration guards. A patch is publishable only when the
+# dedicated handlers and registry dispatch markers are present after applying
+# the complete patch set.
+IMAGE_REGISTRY="$UPSTREAM/open-sse/config/imageRegistry.ts"
+IMAGE_HANDLER="$UPSTREAM/open-sse/handlers/imageGeneration.ts"
+CF_HANDLER="$UPSTREAM/open-sse/handlers/imageGeneration/providers/cloudflareWorkersAi.ts"
+HORDE_HANDLER="$UPSTREAM/open-sse/handlers/imageGeneration/providers/aiHorde.ts"
 
-# Legacy assertions are conditional so the next baseline can remove obsolete
-# patches instead of carrying their markers forever.
-if has_patch "patches/quota-ui.patch"; then
-  TARGET="$UPSTREAM/src/app/(dashboard)/dashboard/usage/components/ProviderLimits/QuotaCardGrid.tsx"
-  grep -q 'data-omniroute-quota-ui-patch="source-v1"' "$TARGET"
-fi
+for file in "$IMAGE_REGISTRY" "$IMAGE_HANDLER" "$CF_HANDLER" "$HORDE_HANDLER"; do
+  [[ -f "$file" ]] || { echo "overlay integration file missing: $file" >&2; exit 1; }
+done
 
-# Keep this upstream regression guard while the file/contract exists. If a future
-# upstream refactors the normalization module, the baseline migration must replace
-# this assertion deliberately rather than silently weakening it.
+grep -q 'format: "cloudflare-workers-ai-image"' "$IMAGE_REGISTRY"
+grep -q 'format: "aihorde-image"' "$IMAGE_REGISTRY"
+grep -q 'handleCloudflareWorkersAiImageGeneration' "$IMAGE_HANDLER"
+grep -q 'handleAiHordeImageGeneration' "$IMAGE_HANDLER"
+
+# Keep upstream regression guards while these contracts exist. If upstream
+# refactors them, migration must update the assertion deliberately rather than
+# silently weakening package/runtime safety.
 NORMALIZATION="$UPSTREAM/open-sse/utils/responsesInputNormalization.ts"
 [[ -f "$NORMALIZATION" ]] || {
   echo "responses normalization contract moved; update compatibility assertion" >&2
@@ -49,8 +56,6 @@ NORMALIZATION="$UPSTREAM/open-sse/utils/responsesInputNormalization.ts"
 }
 grep -q 'record.type === "input_text"' "$NORMALIZATION"
 
-# The 3.8.47 overlay patches this packaging rule; newer upstream releases already
-# contain it. Either way, every publishable artifact must retain the sidecar.
 PACK_POLICY="$UPSTREAM/scripts/build/pack-artifact-policy.ts"
 [[ -f "$PACK_POLICY" ]] || {
   echo "pack artifact policy moved; update packaging assertion" >&2

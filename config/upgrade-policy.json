@@ -4,10 +4,10 @@
   "requiredCapabilities": [
     "antigravity-gemini-3.7"
   ],
-  "plannedOptionalCapabilities": [
+  "overlayCapabilities": [
     "cloudflare-images",
     "aihorde-images"
   ],
   "productionDeploy": "manual-only",
-  "notes": "Advance baseline only to an immutable upstream release/tag that satisfies required capabilities. Optional image adapters may be carried by this overlay if upstream still lacks them."
+  "notes": "Compatibility work may use an exact preview commit, but a publishable baseline must be re-pinned to an immutable upstream release/tag that satisfies required capabilities. Overlay image adapters stay isolated and are removed when upstream gains equivalent native support."
 }

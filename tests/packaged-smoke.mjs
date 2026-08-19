@@ -96,8 +96,12 @@ try {
     timeout: 90_000
   });
   if (!response || response.status() !== 200) throw new Error(`quota page expected 200, got ${response?.status()}`);
-  await page.locator('[data-omniroute-quota-ui-patch="source-v1"]').waitFor({ state: "visible", timeout: 30_000 });
-  await page.getByText("Quota UI patch", { exact: true }).waitFor({ state: "visible", timeout: 30_000 });
+
+  // The old custom Quota UI patch was retired on the 3.8.50 migration because
+  // upstream now provides the filtering, sorting, expandable groups and compact
+  // layout. Smoke the upstream UI contract instead of a legacy DOM marker.
+  await page.getByText("Patched Smoke", { exact: false }).first().waitFor({ state: "visible", timeout: 30_000 });
+  await page.getByRole("button", { name: "Switch to compact quota layout" }).waitFor({ state: "visible", timeout: 30_000 });
 
   if (pageErrors.length) throw new Error(`page errors:\n${pageErrors.join("\n")}`);
   if (consoleErrors.length) throw new Error(`console errors:\n${consoleErrors.join("\n")}`);
@@ -106,7 +110,7 @@ try {
   console.log("PACKAGED_LAUNCHER=ok");
   console.log("API_GUARD=ok");
   console.log("QUOTA_SSR=ok");
-  console.log("QUOTA_HYDRATION=ok");
+  console.log("UPSTREAM_QUOTA_HYDRATION=ok");
   console.log("BROWSER_CONSOLE=ok");
 } finally {
   await browser?.close().catch(() => {});

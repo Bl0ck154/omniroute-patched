@@ -1,0 +1,313 @@
+diff --git a/open-sse/config/imageRegistry.ts b/open-sse/config/imageRegistry.ts
+index 585ebbf..1dd61e5 100644
+--- a/open-sse/config/imageRegistry.ts
++++ b/open-sse/config/imageRegistry.ts
+@@ -11,6 +11,26 @@
+     supportedSizes: ["1024x1024"],
+   },
+ 
++  // Cloudflare Workers AI image execution reuses the existing cloudflare-ai
++  // API token + Account ID connection. The /ai/run endpoint returns image data
++  // rather than OpenAI image JSON, so it uses a dedicated adapter.
++  "cloudflare-ai": {
++    id: "cloudflare-ai",
++    alias: "cf",
++    baseUrl: "https://api.cloudflare.com/client/v4/accounts",
++    authType: "apikey",
++    authHeader: "bearer",
++    format: "cloudflare-workers-ai-image",
++    models: [
++      { id: "@cf/black-forest-labs/flux-1-schnell", name: "FLUX.1 Schnell (Workers AI)" },
++      {
++        id: "@cf/bytedance/stable-diffusion-xl-lightning",
++        name: "SDXL Lightning (Workers AI)",
++      },
++    ],
++    supportedSizes: [],
++  },
++
+   // HuggingFace Hub Inference API text-to-image task. Returns raw image bytes
+   // (not JSON), so it uses a dedicated "huggingface-image" format handled by
+   // handleHuggingFaceImageGeneration. Same base URL convention as the HF
+diff --git a/open-sse/handlers/imageGeneration.ts b/open-sse/handlers/imageGeneration.ts
+index 4b9e668..2a06029 100644
+--- a/open-sse/handlers/imageGeneration.ts
++++ b/open-sse/handlers/imageGeneration.ts
+@@ -5,6 +5,7 @@
+ import { handleSDWebUIImageGeneration } from "./imageGeneration/providers/sdWebUI.ts";
+ import { handleHyperbolicImageGeneration } from "./imageGeneration/providers/hyperbolic.ts";
+ import { handleHuggingFaceImageGeneration } from "./imageGeneration/providers/huggingface.ts";
++import { handleCloudflareWorkersAiImageGeneration } from "./imageGeneration/providers/cloudflareWorkersAi.ts";
+ import { handleComfyUIImageGeneration } from "./imageGeneration/providers/comfyUI.ts";
+ import { handleImagen3ImageGeneration } from "./imageGeneration/providers/imagen3.ts";
+ import { handleGoogleImagenGeneration } from "./imageGeneration/providers/googleImagen.ts";
+@@ -31,6 +32,18 @@ import { handleGoogleImagenGeneration } from "./imageGeneration/providers/google
+     });
+   }
+ 
++  if (providerConfig.format === "cloudflare-workers-ai-image") {
++    return handleCloudflareWorkersAiImageGeneration({
++      model,
++      provider,
++      providerConfig,
++      body,
++      credentials,
++      log,
++      signal,
++    });
++  }
++
+   if (providerConfig.format === "fal-ai") {
+     return handleFalAIImageGeneration({
+       model,
+diff --git a/open-sse/handlers/imageGeneration/providers/cloudflareWorkersAi.ts b/open-sse/handlers/imageGeneration/providers/cloudflareWorkersAi.ts
+new file mode 100644
+index 0000000..7b29d2b
+--- /dev/null
++++ b/open-sse/handlers/imageGeneration/providers/cloudflareWorkersAi.ts
+@@ -0,0 +1,203 @@
++import { saveCallLog } from "@/lib/usageDb";
++import { sanitizeErrorMessage, sanitizeUpstreamDetails } from "../../../utils/error.ts";
++
++type CloudflareImageCredentials = {
++  apiKey?: string;
++  accessToken?: string;
++  accountId?: string;
++  providerSpecificData?: {
++    accountId?: string;
++  } | null;
++} | null | undefined;
++
++const MAX_IMAGES_PER_REQUEST = 4;
++
++export function resolveCloudflareWorkersAiAccountId(
++  credentials: CloudflareImageCredentials
++): string | null {
++  const value =
++    credentials?.providerSpecificData?.accountId ||
++    credentials?.accountId ||
++    process.env.CLOUDFLARE_ACCOUNT_ID;
++  return typeof value === "string" && value.trim() ? value.trim() : null;
++}
++
++function normalizePositiveInteger(value: unknown, min: number, max: number): number | null {
++  const parsed = Number(value);
++  if (!Number.isFinite(parsed)) return null;
++  return Math.min(max, Math.max(min, Math.trunc(parsed)));
++}
++
++export function buildCloudflareWorkersAiImageInput(
++  body: Record<string, unknown>,
++  imageIndex = 0
++): Record<string, unknown> {
++  const prompt = typeof body.prompt === "string" ? body.prompt : String(body.prompt ?? "");
++  const input: Record<string, unknown> = { prompt };
++
++  const steps = normalizePositiveInteger(body.steps, 1, 8);
++  if (steps !== null) input.steps = steps;
++
++  const seed = normalizePositiveInteger(body.seed, 0, 2_147_483_647);
++  if (seed !== null) input.seed = seed + imageIndex;
++
++  return input;
++}
++
++export function extractCloudflareWorkersAiImage(payload: unknown): string | null {
++  if (typeof payload === "string" && payload.trim()) return payload.trim();
++  if (!payload || typeof payload !== "object") return null;
++
++  const envelope = payload as Record<string, unknown>;
++  const result = envelope.result ?? envelope;
++  if (typeof result === "string" && result.trim()) return result.trim();
++  if (!result || typeof result !== "object") return null;
++
++  const image = (result as Record<string, unknown>).image;
++  return typeof image === "string" && image.trim() ? image.trim() : null;
++}
++
++function stripDataUrl(value: string): string {
++  const marker = ";base64,";
++  const index = value.indexOf(marker);
++  return index >= 0 ? value.slice(index + marker.length) : value;
++}
++
++function cloudflareError(payload: unknown, fallback: string): string {
++  if (payload && typeof payload === "object") {
++    const errors = (payload as Record<string, unknown>).errors;
++    if (Array.isArray(errors) && errors.length > 0) {
++      const first = errors[0];
++      if (first && typeof first === "object") {
++        const message = (first as Record<string, unknown>).message;
++        if (typeof message === "string" && message.trim()) return message.trim();
++      }
++    }
++  }
++  return fallback;
++}
++
++export async function handleCloudflareWorkersAiImageGeneration({
++  model,
++  provider,
++  providerConfig,
++  body,
++  credentials,
++  log,
++  signal = null,
++}) {
++  const startTime = Date.now();
++  const token = credentials?.apiKey || credentials?.accessToken;
++  const accountId = resolveCloudflareWorkersAiAccountId(credentials);
++  const prompt = typeof body.prompt === "string" ? body.prompt : String(body.prompt ?? "");
++
++  if (!token) {
++    return { success: false, status: 401, error: "Cloudflare Workers AI API token is required" };
++  }
++  if (!accountId) {
++    return {
++      success: false,
++      status: 400,
++      error:
++        "Cloudflare Workers AI requires an Account ID. Add it to the cloudflare-ai provider settings.",
++    };
++  }
++
++  const requestedCount = normalizePositiveInteger(body.n, 1, MAX_IMAGES_PER_REQUEST) ?? 1;
++  const baseUrl = String(providerConfig.baseUrl || "https://api.cloudflare.com/client/v4/accounts")
++    .replace(/\/+$/, "");
++  const url = `${baseUrl}/${encodeURIComponent(accountId)}/ai/run/${model}`;
++
++  log?.info?.(
++    "IMAGE",
++    `${provider}/${model} (workers-ai) | prompt: "${prompt.slice(0, 60)}..." | n=${requestedCount}`
++  );
++
++  try {
++    const images: Array<{ b64_json: string; revised_prompt: string }> = [];
++
++    for (let index = 0; index < requestedCount; index += 1) {
++      const response = await fetch(url, {
++        method: "POST",
++        headers: {
++          "Content-Type": "application/json",
++          Authorization: `Bearer ${token}`,
++        },
++        body: JSON.stringify(buildCloudflareWorkersAiImageInput(body, index)),
++        signal: signal || undefined,
++      });
++
++      if (!response.ok) {
++        const raw = await response.text();
++        let parsed: unknown = null;
++        try {
++          parsed = JSON.parse(raw);
++        } catch {}
++        const safeDetails = sanitizeUpstreamDetails(parsed ?? raw);
++        const message = cloudflareError(parsed, sanitizeErrorMessage(raw) || `HTTP ${response.status}`);
++        saveCallLog({
++          method: "POST",
++          path: "/v1/images/generations",
++          status: response.status,
++          model: `${provider}/${model}`,
++          provider,
++          duration: Date.now() - startTime,
++          error: typeof safeDetails === "string" ? safeDetails.slice(0, 500) : message.slice(0, 500),
++        }).catch(() => {});
++        return { success: false, status: response.status, error: message };
++      }
++
++      const contentType = response.headers.get("content-type") || "";
++      let imageBase64: string | null = null;
++
++      if (contentType.startsWith("image/") || contentType.includes("application/octet-stream")) {
++        imageBase64 = Buffer.from(await response.arrayBuffer()).toString("base64");
++      } else {
++        const payload = await response.json();
++        const extracted = extractCloudflareWorkersAiImage(payload);
++        if (extracted) imageBase64 = stripDataUrl(extracted);
++      }
++
++      if (!imageBase64) {
++        return {
++          success: false,
++          status: 502,
++          error: "Cloudflare Workers AI returned no image data",
++        };
++      }
++
++      images.push({ b64_json: imageBase64, revised_prompt: prompt });
++    }
++
++    saveCallLog({
++      method: "POST",
++      path: "/v1/images/generations",
++      status: 200,
++      model: `${provider}/${model}`,
++      provider,
++      duration: Date.now() - startTime,
++      responseBody: { images_count: images.length },
++    }).catch(() => {});
++
++    return {
++      success: true,
++      data: {
++        created: Math.floor(Date.now() / 1000),
++        data: images,
++      },
++    };
++  } catch (err) {
++    const message = sanitizeErrorMessage((err as Error)?.message || String(err));
++    log?.error?.("IMAGE", `${provider} fetch error: ${message}`);
++    saveCallLog({
++      method: "POST",
++      path: "/v1/images/generations",
++      status: 502,
++      model: `${provider}/${model}`,
++      provider,
++      duration: Date.now() - startTime,
++      error: message.slice(0, 500),
++    }).catch(() => {});
++    return { success: false, status: 502, error: `Image provider error: ${message}` };
++  }
++}
+diff --git a/tests/unit/cloudflare-workers-ai-image.test.ts b/tests/unit/cloudflare-workers-ai-image.test.ts
+new file mode 100644
+index 0000000..95224c0
+--- /dev/null
++++ b/tests/unit/cloudflare-workers-ai-image.test.ts
+@@ -0,0 +1,36 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++
++import {
++  buildCloudflareWorkersAiImageInput,
++  extractCloudflareWorkersAiImage,
++  resolveCloudflareWorkersAiAccountId,
++} from "../../open-sse/handlers/imageGeneration/providers/cloudflareWorkersAi.ts";
++
++test("Cloudflare image adapter resolves account ID from provider-specific credentials", () => {
++  assert.equal(
++    resolveCloudflareWorkersAiAccountId({
++      apiKey: "test",
++      providerSpecificData: { accountId: "account-123" },
++    }),
++    "account-123"
++  );
++});
++
++test("Cloudflare image adapter builds the narrow Workers AI payload", () => {
++  assert.deepEqual(
++    buildCloudflareWorkersAiImageInput(
++      { prompt: "cat", steps: 99, seed: 41, size: "1024x1024", response_format: "url" },
++      1
++    ),
++    { prompt: "cat", steps: 8, seed: 42 }
++  );
++});
++
++test("Cloudflare image adapter extracts the REST API image envelope", () => {
++  assert.equal(
++    extractCloudflareWorkersAiImage({ success: true, result: { image: "YWJj" } }),
++    "YWJj"
++  );
++  assert.equal(extractCloudflareWorkersAiImage({ result: {} }), null);
++});

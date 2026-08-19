@@ -8,12 +8,12 @@ on:
         required: true
         type: string
       patch_revision:
-        description: Patch artifact revision
+        description: Overlay artifact revision
         required: false
-        default: "2"
+        default: "1"
         type: string
       upstream_ref:
-        description: Upstream tag or branch; defaults to v<version>
+        description: Upstream tag or branch; baseline pin is used when omitted for the baseline version
         required: false
         default: ""
         type: string
@@ -38,8 +38,8 @@ jobs:
     env:
       VERSION: ${{ inputs.version }}
       PATCH_REVISION: ${{ inputs.patch_revision }}
-      UPSTREAM_REF: ${{ inputs.upstream_ref }}
-      UPSTREAM_COMMIT: ${{ inputs.upstream_commit }}
+      INPUT_UPSTREAM_REF: ${{ inputs.upstream_ref }}
+      INPUT_UPSTREAM_COMMIT: ${{ inputs.upstream_commit }}
       JWT_SECRET: ci-build-jwt-secret-0123456789-abcdefghijklmnopqrstuvwxyz
       API_KEY_SECRET: ci-build-api-secret-0123456789-abcdefghijklmnopqrstuvwxyz
       INITIAL_PASSWORD: ci-only-password
@@ -54,17 +54,51 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Check public overlay hygiene
+        run: bash scripts/check-public-hygiene.sh
+
+      - name: Resolve upstream source
+        run: |
+          set -euo pipefail
+          BASELINE_VERSION=$(node -p "require('./config/baseline.json').upstreamVersion")
+          BASELINE_REF=$(node -p "require('./config/baseline.json').upstreamRef")
+          BASELINE_COMMIT=$(node -p "require('./config/baseline.json').upstreamCommit")
+
+          UPSTREAM_REF="$INPUT_UPSTREAM_REF"
+          UPSTREAM_COMMIT="$INPUT_UPSTREAM_COMMIT"
+          if [ "$VERSION" = "$BASELINE_VERSION" ] && [ -z "$UPSTREAM_REF" ] && [ -z "$UPSTREAM_COMMIT" ]; then
+            UPSTREAM_REF="$BASELINE_REF"
+            UPSTREAM_COMMIT="$BASELINE_COMMIT"
+          fi
+          if [ -z "$UPSTREAM_REF" ] && [ -z "$UPSTREAM_COMMIT" ]; then
+            UPSTREAM_REF="v${VERSION}"
+          fi
+
+          if [ -n "$UPSTREAM_COMMIT" ] && ! [[ "$UPSTREAM_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "invalid upstream commit: $UPSTREAM_COMMIT" >&2
+            exit 1
+          fi
+
+          PUBLISHABLE_SOURCE=false
+          if [[ "$UPSTREAM_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            PUBLISHABLE_SOURCE=true
+          fi
+
+          echo "UPSTREAM_REF=$UPSTREAM_REF" >> "$GITHUB_ENV"
+          echo "UPSTREAM_COMMIT=$UPSTREAM_COMMIT" >> "$GITHUB_ENV"
+          echo "PUBLISHABLE_SOURCE=$PUBLISHABLE_SOURCE" >> "$GITHUB_ENV"
+          echo "Resolved upstream source: ref=${UPSTREAM_REF:-none} commit=${UPSTREAM_COMMIT:-none} publishable=$PUBLISHABLE_SOURCE"
+
       - name: Clone exact upstream source
         run: |
+          set -euo pipefail
           if [ -n "$UPSTREAM_COMMIT" ]; then
-            [[ "$UPSTREAM_COMMIT" =~ ^[0-9a-f]{40}$ ]]
             git init upstream
             git -C upstream remote add origin https://github.com/diegosouzapw/OmniRoute.git
             git -C upstream fetch --depth 1 origin "$UPSTREAM_COMMIT"
             git -C upstream checkout --detach FETCH_HEAD
           else
-            REF="${UPSTREAM_REF:-v${VERSION}}"
-            git clone --depth 1 --branch "$REF" https://github.com/diegosouzapw/OmniRoute.git upstream
+            git clone --depth 1 --branch "$UPSTREAM_REF" https://github.com/diegosouzapw/OmniRoute.git upstream
           fi
 
       - uses: actions/setup-node@v4
@@ -78,18 +112,30 @@ jobs:
           test "$(node -p "require('./upstream/package.json').version")" = "$VERSION"
           ACTUAL_COMMIT=$(git -C upstream rev-parse HEAD)
           if [ -n "$UPSTREAM_COMMIT" ]; then test "$ACTUAL_COMMIT" = "$UPSTREAM_COMMIT"; fi
-          echo "UPSTREAM_SOURCE=${UPSTREAM_REF:-v${VERSION}}@$ACTUAL_COMMIT"
+          echo "UPSTREAM_SOURCE=${UPSTREAM_REF:-detached}@$ACTUAL_COMMIT"
 
-      - name: Apply source patch
+      - name: Apply source overlay
         run: bash scripts/apply-patch.sh upstream
 
       - name: Install dependencies
         working-directory: upstream
         run: npm ci
 
-      - name: Lint patched component
+      - name: Lint overlay handlers
         working-directory: upstream
-        run: ./node_modules/.bin/eslint 'src/app/(dashboard)/dashboard/usage/components/ProviderLimits/QuotaCardGrid.tsx'
+        run: >-
+          ./node_modules/.bin/eslint
+          open-sse/handlers/imageGeneration/providers/cloudflareWorkersAi.ts
+          open-sse/handlers/imageGeneration/providers/aiHorde.ts
+          tests/unit/cloudflare-workers-ai-image.test.ts
+          tests/unit/aihorde-image.test.ts
+
+      - name: Test image overlay adapters
+        working-directory: upstream
+        run: >-
+          node --import tsx/esm --test
+          tests/unit/cloudflare-workers-ai-image.test.ts
+          tests/unit/aihorde-image.test.ts
 
       - name: Test GPT-5.6 Responses normalization
         working-directory: upstream
@@ -138,10 +184,15 @@ jobs:
       - name: Install packed artifact
         run: npm install --prefix smoke-root --omit=dev "./artifacts/${{ steps.pack.outputs.file }}"
 
+      - name: Verify packed overlay markers
+        run: |
+          grep -Rqs 'cloudflare-workers-ai-image' smoke-root/node_modules/omniroute/dist
+          grep -Rqs 'aihorde-image' smoke-root/node_modules/omniroute/dist
+
       - name: Preserve candidate artifact for diagnostics
         uses: actions/upload-artifact@v4
         with:
-          name: omniroute-${{ inputs.version }}-quota-ui-${{ inputs.patch_revision }}-candidate
+          name: omniroute-${{ inputs.version }}-overlay-${{ inputs.patch_revision }}-candidate
           path: artifacts/${{ steps.pack.outputs.file }}
           retention-days: 3
 
@@ -154,19 +205,26 @@ jobs:
           cd artifacts
           sha256sum "${{ steps.pack.outputs.file }}" manifest.json > SHA256SUMS
 
+      - name: Keep preview build candidate-only
+        if: env.PUBLISHABLE_SOURCE != 'true'
+        run: echo "Source ref $UPSTREAM_REF is not an immutable vX.Y.Z release tag; candidate artifact only, no GitHub Release will be published."
+
       - name: Publish verified release
+        if: env.PUBLISHABLE_SOURCE == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="v${VERSION}-quota-ui.${PATCH_REVISION}"
-          gh release create "$TAG" artifacts/* --title "OmniRoute ${VERSION} + patches ${PATCH_REVISION}" --notes "Verified source-level patched release for ${UPSTREAM_REF:-v${VERSION}} at ${UPSTREAM_COMMIT:-tag head}. Includes Quota UI and the configured source patch set. Built and tested by GitHub Actions; never deploy automatically."
+          TAG="v${VERSION}-overlay.${PATCH_REVISION}"
+          gh release create "$TAG" artifacts/* \
+            --title "OmniRoute ${VERSION} + overlay ${PATCH_REVISION}" \
+            --notes "Verified source-level overlay for ${UPSTREAM_REF} at $(git -C upstream rev-parse HEAD). Includes the configured Cloudflare Workers AI and AI Horde image adapters. Built and tested by GitHub Actions; never deploys automatically."
 
       - name: Close matching incompatibility issue
-        if: success()
+        if: success() && env.PUBLISHABLE_SOURCE == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh issue list --state open --search "OmniRoute ${VERSION} patch compatibility" --json number --jq '.[].number' | xargs -r -n1 gh issue close --comment "Verified release published successfully."
+          gh issue list --state open --search "OmniRoute ${VERSION} patch compatibility" --json number --jq '.[].number' | xargs -r -n1 gh issue close --comment "Verified overlay release published successfully."
 
   report-failure:
     if: failure()
@@ -184,5 +242,5 @@ jobs:
         run: |
           TITLE="OmniRoute ${VERSION} patch compatibility"
           EXISTING=$(gh issue list --state open --search "$TITLE in:title" --json number --jq '.[0].number // empty')
-          BODY="The automated patched release did not pass all gates. Production was not touched. Inspect: ${RUN_URL}"
+          BODY="The automated overlay release did not pass all gates. Production was not touched. Inspect: ${RUN_URL}"
           if [ -n "$EXISTING" ]; then gh issue comment "$EXISTING" --body "$BODY"; else gh issue create --title "$TITLE" --body "$BODY"; fi
