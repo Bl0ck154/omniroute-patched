@@ -3,11 +3,13 @@ name: One-shot stale branch cleanup
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
+    types: [edited]
 
 permissions:
   contents: write
 
-# Retriggered after workflow installation.
 jobs:
   cleanup:
     if: github.repository == 'Bl0ck154/omniroute-patched'
