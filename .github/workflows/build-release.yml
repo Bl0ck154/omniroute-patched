@@ -100,6 +100,15 @@ jobs:
           --test --test-force-exit
           tests/unit/responses-translation-fixes.test.ts
 
+      - name: Test Codex non-stream SSE bridge
+        working-directory: upstream
+        run: >-
+          node --import tsx/esm
+          --import ./open-sse/utils/setupPolyfill.ts
+          --import ./tests/_setup/isolateDataDir.ts
+          --test --test-force-exit
+          tests/unit/cline-force-stream.test.ts
+
       - name: Install Chromium
         working-directory: upstream
         run: npx playwright install --with-deps chromium

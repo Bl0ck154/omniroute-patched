@@ -7,9 +7,10 @@ assumed to be valid merely because a later OmniRoute version has a similar file.
 
 - `quota-ui.patch` — legacy Quota UI customization for the 3.8.47 baseline.
 - `head-response-guard-packaging.patch` — legacy 3.8.47 packaging fix.
+- `codex-nonstream-sse.patch` — marks Codex `/responses` as an upstream-streaming provider so non-stream clients drain terminal SSE instead of waiting for EOF.
 
-Both remain configured in `config/baseline.json` so the current verified baseline
-stays reproducible.
+All current-baseline patches remain configured in `config/baseline.json` so the verified
+baseline stays reproducible.
 
 ## Next baseline
 
