@@ -4,15 +4,32 @@
 
 Repository preparation and production deployment are different tasks.
 
+### Build execution policy
+
+Full OmniRoute build/test/package jobs are resource-heavy and must **not** run on the production VPS.
+For this public repository, use the standard GitHub-hosted runner in the manual
+`Build patched OmniRoute release` workflow for full Next builds, CLI builds,
+`npm pack`, Playwright/browser smoke tests, and release artifact generation.
+
+The production VPS may be used only for lightweight inspection and for installing,
+verifying, or rolling back an already-built release. Do not clone upstream and run
+`npm ci`, `npm run build`, `npm run build:cli`, Playwright installation, or the full
+release test matrix on production unless an explicit emergency/debug request says
+to do so.
+
+Do not avoid GitHub Actions merely to conserve Actions minutes for this repository:
+it is public and the release workflow uses a standard GitHub-hosted runner. This
+rule does not automatically apply to private repositories or larger runners.
+
 ### Prepare/update the patched repository
 
 1. Read `config/upgrade-policy.json` and the current `config/baseline.json`.
-2. Select an immutable upstream GitHub release/tag that satisfies the required capabilities.
+2. Select a published upstream GitHub release/tag that satisfies the required capabilities.
 3. Record the exact upstream commit before publishing anything.
 4. Compare current upstream behavior with each local patch; drop behavior that is already upstream.
 5. Port only still-useful deltas in a branch. Never patch compiled Next.js chunks.
 6. Run public-repository hygiene checks before applying/building patches.
-7. Run the full packaged release test matrix.
+7. Run the full packaged release test matrix on the standard GitHub-hosted Actions runner.
 8. Publish a verified GitHub Release only if every gate passes.
 9. Stop there unless production deployment was separately and explicitly requested.
 
