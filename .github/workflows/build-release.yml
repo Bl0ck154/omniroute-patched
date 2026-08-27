@@ -10,7 +10,7 @@ on:
       patch_revision:
         description: Patch artifact revision
         required: false
-        default: "2"
+        default: "7"
         type: string
       upstream_ref:
         description: Upstream tag or branch; defaults to v<version>
@@ -80,16 +80,16 @@ jobs:
           if [ -n "$UPSTREAM_COMMIT" ]; then test "$ACTUAL_COMMIT" = "$UPSTREAM_COMMIT"; fi
           echo "UPSTREAM_SOURCE=${UPSTREAM_REF:-v${VERSION}}@$ACTUAL_COMMIT"
 
-      - name: Apply source patch
+      - name: Apply source patches
         run: bash scripts/apply-patch.sh upstream
 
       - name: Install dependencies
         working-directory: upstream
         run: npm ci
 
-      - name: Lint patched component
+      - name: Lint patched Codex registry
         working-directory: upstream
-        run: ./node_modules/.bin/eslint 'src/app/(dashboard)/dashboard/usage/components/ProviderLimits/QuotaCardGrid.tsx'
+        run: ./node_modules/.bin/eslint 'open-sse/config/providers/registry/codex/index.ts'
 
       - name: Test GPT-5.6 Responses normalization
         working-directory: upstream
@@ -150,7 +150,7 @@ jobs:
       - name: Preserve candidate artifact for diagnostics
         uses: actions/upload-artifact@v4
         with:
-          name: omniroute-${{ inputs.version }}-quota-ui-${{ inputs.patch_revision }}-candidate
+          name: omniroute-${{ inputs.version }}-patched-${{ inputs.patch_revision }}-candidate
           path: artifacts/${{ steps.pack.outputs.file }}
           retention-days: 3
 
@@ -167,8 +167,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="v${VERSION}-quota-ui.${PATCH_REVISION}"
-          gh release create "$TAG" artifacts/* --title "OmniRoute ${VERSION} + patches ${PATCH_REVISION}" --notes "Verified source-level patched release for ${UPSTREAM_REF:-v${VERSION}} at ${UPSTREAM_COMMIT:-tag head}. Includes Quota UI and the configured source patch set. Built and tested by GitHub Actions; never deploy automatically."
+          TAG="v${VERSION}-patched.${PATCH_REVISION}"
+          gh release create "$TAG" artifacts/* --title "OmniRoute ${VERSION} + patches ${PATCH_REVISION}" --notes "Verified source-level patched release for ${UPSTREAM_REF:-v${VERSION}} at ${UPSTREAM_COMMIT:-tag head}. Includes the configured source patch set. Built and tested by GitHub Actions; never deploy automatically."
 
       - name: Close matching incompatibility issue
         if: success()
