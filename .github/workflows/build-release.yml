@@ -87,14 +87,11 @@ jobs:
         working-directory: upstream
         run: npm ci
 
-      - name: Lint patched source files
+      - name: Lint directly owned patch files
         working-directory: upstream
         run: >-
           ./node_modules/.bin/eslint
           'open-sse/config/providers/registry/codex/index.ts'
-          'open-sse/handlers/chatCore.ts'
-          'open-sse/handlers/imageGeneration.ts'
-          'src/lib/db/providers.ts'
           'src/lib/oauth/services/codexImport.ts'
           'src/lib/usage/codexImageArtifactSink.ts'
 

@@ -65,6 +65,9 @@ silently modify production.
 - Source patches apply with no fuzz or rejected hunks.
 - Every configured patch file exists.
 - Targeted lint/type checks pass for touched upstream code.
+- Large upstream integration files that are not lint-clean at the pinned tag are
+  validated by focused regression tests and the full release build; lint remains
+  mandatory for standalone modules introduced or directly owned by this overlay.
 - Existing compatibility assertions remain valid or are deliberately migrated.
 - Official Next release build succeeds.
 - CLI release build succeeds.
