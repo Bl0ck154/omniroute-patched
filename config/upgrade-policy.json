@@ -1,6 +1,8 @@
 {
   "minimumVersion": "3.8.50",
-  "requireImmutableRelease": true,
+  "requireImmutableRelease": false,
+  "requireAnnotatedTag": true,
+  "requireExactCommitPin": true,
   "requiredCapabilities": [
     "antigravity-gemini-3.7"
   ],
@@ -9,5 +11,5 @@
     "aihorde-images"
   ],
   "productionDeploy": "manual-only",
-  "notes": "Advance baseline only to an immutable upstream release/tag that satisfies required capabilities. Optional image adapters may be carried by this overlay if upstream still lacks them."
+  "notes": "Advance baseline only to a published upstream tag resolved to an exact commit SHA. GitHub release immutability is not required because upstream v3.8.50 is not marked immutable; the baseline commit pin is authoritative. Optional image adapters remain independent overlay work."
 }

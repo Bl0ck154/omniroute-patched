@@ -20,24 +20,24 @@ A successful GitHub Actions build **never deploys to production**.
 
 ## Current baseline
 
-The currently supported patch set remains pinned to upstream `release/v3.8.47`
-commit `38d6cd9955d55548dd1f85fff3ab2b477537659d`.
+The supported patch set is pinned to upstream tag `v3.8.50`, exact commit
+`5458026c216f77a3da68ea49152dc33470cfe2cb`.
 
-That baseline is intentionally left intact while the next upstream target is still
-moving. The old `head-response-guard-packaging.patch` is required by this baseline,
-but is already upstream in newer OmniRoute versions and must be dropped when the
-baseline advances.
+The legacy 3.8.47 Quota UI and HEAD-response packaging patches are no longer applied.
+OmniRoute v3.8.50 already contains the packaging guard and substantially improved
+quota UX, including deterministic provider ordering, expandable provider sections,
+compact layout support, account sorting, and quota visibility controls.
 
-## Next upgrade policy
+The remaining source patch is `patches/codex-nonstream-sse.patch`: stock v3.8.50
+still does not mark the Codex Responses upstream as force-streaming, so this overlay
+keeps the SSE-to-JSON bridge correct for callers using `stream:false`.
 
-The next baseline refresh is tracked in [`docs/NEXT_UPGRADE.md`](docs/NEXT_UPGRADE.md).
-The repository should not jump to a moving preview branch just to be newer. The
-preferred target is an immutable upstream release/tag that satisfies the required
-capabilities, including working Antigravity Gemini 3.7 support.
+## Upgrade policy
 
-The old large Quota UI patch will not be blindly rebased. Newer OmniRoute versions
-already implement much of the desired quota UX, so only still-useful deltas should
-be carried forward as a small semantic patch.
+Stable upgrades use a published upstream tag resolved to an exact commit SHA. The
+exact commit pin is authoritative even if GitHub's release object is not marked
+immutable. Required provider capabilities must be present in upstream before the
+baseline moves.
 
 Planned optional extensions are documented in
 [`docs/IMAGE_ADAPTERS.md`](docs/IMAGE_ADAPTERS.md), including Cloudflare Workers AI
@@ -46,9 +46,10 @@ and AI Horde image-generation support for OmniRoute's OpenAI-compatible image AP
 ## Repository layout
 
 - `config/baseline.json` — exact currently supported upstream source and patch set.
-- `config/upgrade-policy.json` — readiness requirements for the next baseline.
-- `patches/quota-ui.patch` — current legacy Quota UI patch for the 3.8.47 baseline.
-- `patches/head-response-guard-packaging.patch` — legacy 3.8.47 packaging fix.
+- `config/upgrade-policy.json` — readiness requirements for future baselines.
+- `patches/codex-nonstream-sse.patch` — Codex `stream:false` compatibility fix.
+- `patches/quota-ui.patch` — retained legacy reference; not configured for v3.8.50.
+- `patches/head-response-guard-packaging.patch` — retained legacy reference; not configured for v3.8.50.
 - `.github/workflows/build-release.yml` — manual/versioned release builder.
 - `.github/workflows/watch-upstream.yml` — stable-upstream readiness watcher.
 - `tests/packaged-smoke.mjs` — auth, API guard, SSR, hydration, and console smoke.
@@ -58,8 +59,8 @@ and AI Horde image-generation support for OmniRoute's OpenAI-compatible image AP
 
 ## Release flow
 
-1. Select an immutable upstream tag/commit that meets `config/upgrade-policy.json`.
-2. Port only the patches/features still missing upstream.
+1. Select a published upstream tag and resolve it to an exact commit that meets `config/upgrade-policy.json`.
+2. Port only patches/features still missing upstream.
 3. Build and test the real packed npm artifact.
-4. Publish a verified release only after all gates pass.
+4. Publish a verified patched release only after all gates pass.
 5. Deploy only after a separate explicit production request.
