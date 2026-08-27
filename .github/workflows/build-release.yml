@@ -10,7 +10,7 @@ on:
       patch_revision:
         description: Patch artifact revision
         required: false
-        default: "7"
+        default: "8"
         type: string
       upstream_ref:
         description: Upstream tag or branch; defaults to v<version>
@@ -48,7 +48,7 @@ jobs:
       OMNIROUTE_DISABLE_BACKGROUND_SERVICES: "true"
       DISABLE_SQLITE_AUTO_BACKUP: "true"
       NEXT_TELEMETRY_DISABLED: "1"
-      OMNIROUTE_BUILD_MEMORY_MB: "6144"
+      OMNIROUTE_BUILD_MEMORY_MB: "12288"
       OMNIROUTE_USE_TURBOPACK: "0"
 
     steps:
