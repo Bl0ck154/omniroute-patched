@@ -9,7 +9,9 @@ STATE_DIR=${STATE_DIR:-/var/lib/omniroute-patched-update}
 DATA_DIR=${DATA_DIR:-/home/admin/.omniroute}
 PORT=${PORT:-20128}
 CANARY_PORT=${CANARY_PORT:-20228}
-SYSTEMCTL=(runuser -u "$SERVICE_USER" -- env XDG_RUNTIME_DIR="/run/user/$(id -u "$SERVICE_USER")" systemctl --user)
+# The updater runs as root. Address the target user's systemd manager directly so
+# deployments do not depend on an interactive user bus being inherited by runuser.
+SYSTEMCTL=(systemctl --user -M "${SERVICE_USER}@")
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null || die "required command missing: $1"; }
@@ -125,14 +127,17 @@ install_release() {
   expected=$(json "$manifest" '.artifactSha256')
   actual=$(sha256sum "$artifact" | awk '{print $1}')
   [[ $actual == "$expected" ]] || die "artifact checksum mismatch"
-  release="${version}-quota-ui.${revision}"
+  release="${version}-patched.${revision}"
   final="$RELEASES_DIR/$release"
   [[ ! -e $final ]] || die "release already exists: $final"
   stage=$(mktemp -d "$RELEASES_DIR/.stage-${release}.XXXXXX")
   CLEANUP_STAGE=$stage
   npm install --prefix "$stage" --omit=dev --ignore-scripts=false "$artifact"
   [[ $(node -p "require('$stage/node_modules/omniroute/package.json').version") == "$version" ]] || die "installed version mismatch"
-  grep -Rqs 'data-omniroute-quota-ui-patch' "$stage/node_modules/omniroute/dist/.build/next" || die "UI patch marker absent"
+  if jq -e '.patches[]?.file == "patches/quota-ui.patch"' "$manifest" >/dev/null; then
+    grep -Rqs 'data-omniroute-quota-ui-patch' "$stage/node_modules/omniroute/dist/.build/next" ||
+      die "configured quota UI patch marker absent"
+  fi
   chown -R "$SERVICE_USER:$SERVICE_USER" "$stage"
   chmod 0755 "$stage"
   runuser -u "$SERVICE_USER" -- test -x "$stage/node_modules/omniroute/bin/omniroute.mjs" ||
