@@ -96,8 +96,10 @@ try {
     timeout: 90_000
   });
   if (!response || response.status() !== 200) throw new Error(`quota page expected 200, got ${response?.status()}`);
-  await page.locator('[data-omniroute-quota-ui-patch="source-v1"]').waitFor({ state: "visible", timeout: 30_000 });
-  await page.getByText("Quota UI patch", { exact: true }).waitFor({ state: "visible", timeout: 30_000 });
+
+  // v3.8.50 has the quota UI features upstream, so the old patched marker/text no longer exists.
+  // Verify the real page hydrates and renders the mocked Codex connection instead of asserting legacy patch DOM.
+  await page.getByText("Patched Smoke", { exact: true }).waitFor({ state: "visible", timeout: 30_000 });
 
   if (pageErrors.length) throw new Error(`page errors:\n${pageErrors.join("\n")}`);
   if (consoleErrors.length) throw new Error(`console errors:\n${consoleErrors.join("\n")}`);
