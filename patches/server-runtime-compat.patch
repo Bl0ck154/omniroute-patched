@@ -1,0 +1,258 @@
+diff --git a/open-sse/handlers/imageGeneration.ts b/open-sse/handlers/imageGeneration.ts
+index db07458..e8cf56d 100644
+--- a/open-sse/handlers/imageGeneration.ts
++++ b/open-sse/handlers/imageGeneration.ts
+@@ -129,6 +129,7 @@ const OPENAI_IMAGE_TO_IMAGE_MODELS = new Set([
+ ]);
+ 
+ const IMAGE_ASPECT_RATIO_PATTERN = /^\d+:\d+$/;
++const IMAGE_SIZE_PATTERN = /^(?:1K|2K|4K)$/;
+ 
+ /**
+  * Resolve the upstream images endpoint for a custom (OpenAI-compatible) image
+@@ -189,6 +190,13 @@ function normalizeImageAspectRatio(value: unknown, fallbackSize: unknown): strin
+   return mapImageSize(typeof fallbackSize === "string" ? fallbackSize : null);
+ }
+ 
++function normalizeImageGenerationSize(snakeCaseValue: unknown, camelCaseValue: unknown): string {
++  const value = snakeCaseValue ?? camelCaseValue;
++  if (typeof value !== "string") return "1K";
++  const normalized = value.trim().toUpperCase();
++  return IMAGE_SIZE_PATTERN.test(normalized) ? normalized : "1K";
++}
++
+ function parseJsonOrNull(value: string): unknown | null {
+   try {
+     return JSON.parse(value);
+@@ -935,12 +943,16 @@ async function handleGeminiImageGeneration({ model, providerConfig, body, creden
+   const candidateCount =
+     typeof body.n === "number" && Number.isFinite(body.n) && body.n > 0 ? Math.floor(body.n) : 1;
+   const promptText = typeof body.prompt === "string" ? body.prompt : String(body.prompt ?? "");
++  const aspectRatio = normalizeImageAspectRatio(body.aspect_ratio, body.size);
++  const imageSize = normalizeImageGenerationSize(body.image_size, body.imageSize);
+ 
+   // Summarized request for call log
+   const logRequestBody = {
+     model: body.model,
+     prompt: promptText.slice(0, 200),
+     size: body.size || "default",
++    aspect_ratio: aspectRatio,
++    image_size: imageSize,
+     n: candidateCount,
+   };
+ 
+@@ -969,7 +981,8 @@ async function handleGeminiImageGeneration({ model, providerConfig, body, creden
+       generationConfig: {
+         candidateCount,
+         imageConfig: {
+-          aspectRatio: normalizeImageAspectRatio(body.aspect_ratio, body.size),
++          aspectRatio,
++          imageSize,
+         },
+       },
+     },
+@@ -989,7 +1002,7 @@ async function handleGeminiImageGeneration({ model, providerConfig, body, creden
+     const promptPreview = promptText.slice(0, 60);
+     log.info(
+       "IMAGE",
+-      `antigravity/${model} (gemini) | prompt: "${promptPreview}..." | format: gemini-image`
++      `antigravity/${model} (gemini) | prompt: "${promptPreview}..." | ${aspectRatio} ${imageSize}`
+     );
+   }
+ 
+diff --git a/src/lib/db/providers.ts b/src/lib/db/providers.ts
+index fbab681..3c7782a 100644
+--- a/src/lib/db/providers.ts
++++ b/src/lib/db/providers.ts
+@@ -534,6 +534,7 @@ export async function createProviderConnection(data: JsonRecord) {
+       _updateConnectionRow(db, existingId, encryptConnectionFields(persistence));
+     })();
+     backupDbFile("pre-write");
++    invalidateDbCache("connections");
+     return withNullableRateLimitOverrides(
+       withNullableQuotaWindowThresholds(
+         withNullableMaxConcurrent(cleanNulls(merged), merged),
+diff --git a/src/lib/oauth/services/codexImport.ts b/src/lib/oauth/services/codexImport.ts
+index aa8a362..e7fbf87 100644
+--- a/src/lib/oauth/services/codexImport.ts
++++ b/src/lib/oauth/services/codexImport.ts
+@@ -27,8 +27,19 @@ export type CodexImportPayload = {
+   email: string;
+   expiresAt: string;
+   testStatus: "active";
++  isActive: true;
++  errorCode: null;
++  lastError: null;
++  lastErrorAt: null;
++  lastErrorType: null;
++  lastErrorSource: null;
++  backoffLevel: 0;
++  rateLimitedUntil: null;
++  priority?: number;
+   providerSpecificData?: {
+     chatgptAccountId?: string;
++    // Canonical alias consumed by the existing Codex workspace upsert path.
++    workspaceId?: string;
+     chatgptPlanType?: string;
+   };
+ };
+@@ -224,7 +235,12 @@ export function normalizeCodexImportRecord(input: unknown): NormalizeResult {
+   const expiresAt = parseExpiry(rec.expired) ?? parseAccessTokenExp(accessToken);
+ 
+   const providerSpecificData: CodexImportPayload["providerSpecificData"] = {};
+-  if (chatgptAccountId) providerSpecificData.chatgptAccountId = chatgptAccountId;
++  if (chatgptAccountId) {
++    providerSpecificData.chatgptAccountId = chatgptAccountId;
++    // CodexSwitcher stores this stable value as account_id; mirror it into
++    // workspaceId so createProviderConnection performs its existing upsert.
++    providerSpecificData.workspaceId = chatgptAccountId;
++  }
+   if (chatgptPlanType) providerSpecificData.chatgptPlanType = chatgptPlanType;
+ 
+   const payload: CodexImportPayload = {
+@@ -235,8 +251,20 @@ export function normalizeCodexImportRecord(input: unknown): NormalizeResult {
+     email,
+     expiresAt,
+     testStatus: "active",
++    // Fresh imported OAuth credentials supersede a previous refresh failure.
++    isActive: true,
++    errorCode: null,
++    lastError: null,
++    lastErrorAt: null,
++    lastErrorType: null,
++    lastErrorSource: null,
++    backoffLevel: 0,
++    rateLimitedUntil: null,
+   };
+   if (idToken) payload.idToken = idToken;
++  if (typeof rec.priority === "number" && Number.isInteger(rec.priority) && rec.priority > 0) {
++    payload.priority = rec.priority;
++  }
+   if (Object.keys(providerSpecificData).length > 0) {
+     payload.providerSpecificData = providerSpecificData;
+   }
+diff --git a/tests/unit/codexBulkImport.test.ts b/tests/unit/codexBulkImport.test.ts
+index 9576b83..ce7b8b1 100644
+--- a/tests/unit/codexBulkImport.test.ts
++++ b/tests/unit/codexBulkImport.test.ts
+@@ -61,10 +61,19 @@ describe("normalizeCodexImportRecord", () => {
+     assert.equal(payload.refreshToken, "refresh-xyz");
+     assert.equal(payload.idToken, FULL_RECORD.id_token);
+     assert.equal(payload.testStatus, "active");
++    assert.equal(payload.isActive, true);
++    assert.equal(payload.errorCode, null);
++    assert.equal(payload.lastError, null);
++    assert.equal(payload.lastErrorAt, null);
++    assert.equal(payload.lastErrorType, null);
++    assert.equal(payload.lastErrorSource, null);
++    assert.equal(payload.backoffLevel, 0);
++    assert.equal(payload.rateLimitedUntil, null);
+     // JWT email wins over the record-level email.
+     assert.equal(payload.email, "test-jwt@example.com");
+     assert.deepEqual(payload.providerSpecificData, {
+       chatgptAccountId: "acct-from-jwt",
++      workspaceId: "acct-from-jwt",
+       chatgptPlanType: "plus",
+     });
+     // ISO-formatted, parses back to the right instant.
+@@ -87,6 +96,7 @@ describe("normalizeCodexImportRecord", () => {
+     if (!result.ok) return;
+     assert.equal(result.payload.email, "fallback@example.com");
+     assert.equal(result.payload.providerSpecificData?.chatgptAccountId, "x");
++    assert.equal(result.payload.providerSpecificData?.workspaceId, "x");
+   });
+ 
+   test("falls back to account_id when id_token is missing", () => {
+@@ -99,6 +109,7 @@ describe("normalizeCodexImportRecord", () => {
+     assert.equal(result.ok, true);
+     if (!result.ok) return;
+     assert.equal(result.payload.providerSpecificData?.chatgptAccountId, "acct-top-level");
++    assert.equal(result.payload.providerSpecificData?.workspaceId, "acct-top-level");
+     assert.equal(result.payload.idToken, undefined);
+   });
+ 
+@@ -205,6 +216,7 @@ describe("normalizeCodexImportRecord", () => {
+     assert.equal(result.payload.email, "cli@example.com");
+     assert.deepEqual(result.payload.providerSpecificData, {
+       chatgptAccountId: "acct-cli",
++      workspaceId: "acct-cli",
+       chatgptPlanType: "free",
+     });
+     // Falls back to the access_token's `exp` claim when no `expired` field exists.
+@@ -283,6 +295,7 @@ describe("9router camelCase Codex export (#6665)", () => {
+     assert.equal(payload.email, "jwt-9r@example.com");
+     assert.deepEqual(payload.providerSpecificData, {
+       chatgptAccountId: "acct-jwt-9r",
++      workspaceId: "acct-jwt-9r",
+       chatgptPlanType: "plus",
+     });
+     // camelCase `expiresAt` is honored as the expiry source.
+@@ -301,6 +314,7 @@ describe("9router camelCase Codex export (#6665)", () => {
+     assert.equal(result.payload.email, "no-jwt-9r@example.com");
+     assert.deepEqual(result.payload.providerSpecificData, {
+       chatgptAccountId: "acct-psd",
++      workspaceId: "acct-psd",
+       chatgptPlanType: "team",
+     });
+   });
+diff --git a/tests/unit/db-read-cache.test.ts b/tests/unit/db-read-cache.test.ts
+index 55181db..a2fdea0 100644
+--- a/tests/unit/db-read-cache.test.ts
++++ b/tests/unit/db-read-cache.test.ts
+@@ -157,6 +157,33 @@ test("resetDbInstance invalidates provider connection read caches", async () =>
+   assert.equal((await providersDb.getProviderConnections()).length, 0);
+ });
+ 
++test("createProviderConnection upsert invalidates the provider connection read cache", async () => {
++  const readCache = await import("../../src/lib/db/readCache.ts");
++  const original = await providersDb.createProviderConnection({
++    provider: "claude",
++    authType: "oauth",
++    email: "cache-upsert@example.com",
++    accessToken: "token-a",
++    refreshToken: "refresh-a",
++    testStatus: "active",
++  });
++
++  const primed = await readCache.getCachedProviderConnectionById(original.id);
++  assert.equal(primed?.testStatus, "active");
++
++  await providersDb.createProviderConnection({
++    provider: "claude",
++    authType: "oauth",
++    email: "cache-upsert@example.com",
++    accessToken: "token-b",
++    refreshToken: "refresh-b",
++    testStatus: "retrying",
++  });
++
++  const refreshed = await readCache.getCachedProviderConnectionById(original.id);
++  assert.equal(refreshed?.testStatus, "retrying");
++});
++
+ test("cached LKGP values refresh only after the specific key is invalidated", async () => {
+   const readCache = await importFresh("src/lib/db/readCache.ts");
+   const db = core.getDbInstance();
+diff --git a/tests/unit/image-generation-handler.test.ts b/tests/unit/image-generation-handler.test.ts
+index 49709a1..0caa469 100644
+--- a/tests/unit/image-generation-handler.test.ts
++++ b/tests/unit/image-generation-handler.test.ts
+@@ -752,7 +752,8 @@ test("handleImageGeneration sends Antigravity image requests with native image_g
+         model: "antigravity/gemini-3.1-flash-image-preview",
+         prompt: "painted beach",
+         size: "1024x1024",
+-        aspect_ratio: "not-a-ratio",
++        aspect_ratio: "3:4",
++        image_size: "2K",
+       },
+       credentials: { accessToken: "ag-token", projectId: "project-123" },
+       log: null,
+@@ -777,7 +778,7 @@ test("handleImageGeneration sends Antigravity image requests with native image_g
+       contents: [{ role: "user", parts: [{ text: "painted beach" }] }],
+       generationConfig: {
+         candidateCount: 1,
+-        imageConfig: { aspectRatio: "1:1" },
++        imageConfig: { aspectRatio: "3:4", imageSize: "2K" },
+       },
+     });
+     assert.deepEqual(result.data.data, [

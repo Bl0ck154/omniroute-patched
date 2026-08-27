@@ -28,9 +28,15 @@ OmniRoute v3.8.50 already contains the packaging guard and substantially improve
 quota UX, including deterministic provider ordering, expandable provider sections,
 compact layout support, account sorting, and quota visibility controls.
 
-The remaining source patch is `patches/codex-nonstream-sse.patch`: stock v3.8.50
-still does not mark the Codex Responses upstream as force-streaming, so this overlay
-keeps the SSE-to-JSON bridge correct for callers using `stream:false`.
+The configured source patches preserve three production contracts that stock
+v3.8.50 does not provide: the Codex `stream:false` SSE bridge, host runtime fixes
+for image sizing/provider state, and the narrowly scoped Etsy image artifact sink.
+The artifact sink remains disabled by default and requires explicit environment
+configuration, including an exact API-key id, before it can capture anything.
+
+The old compiled image-auth guard is not carried forward. OmniRoute v3.8.50 now
+implements source-level image credential refresh and account rotation through
+`imageCredentialRetry`, and CI runs its focused fallback regression test.
 
 ## Upgrade policy
 
@@ -48,6 +54,10 @@ and AI Horde image-generation support for OmniRoute's OpenAI-compatible image AP
 - `config/baseline.json` — exact currently supported upstream source and patch set.
 - `config/upgrade-policy.json` — readiness requirements for future baselines.
 - `patches/codex-nonstream-sse.patch` — Codex `stream:false` compatibility fix.
+- `patches/server-runtime-compat.patch` — Antigravity image-size propagation,
+  connection-cache invalidation after upsert, and safe Codex import recovery state.
+- `patches/etsy-image-artifact-sink.patch` — opt-in, API-key-scoped persistence of
+  completed Codex image outputs after a downstream client timeout.
 - `patches/quota-ui.patch` — retained legacy reference; not configured for v3.8.50.
 - `patches/head-response-guard-packaging.patch` — retained legacy reference; not configured for v3.8.50.
 - `.github/workflows/build-release.yml` — manual/versioned release builder.

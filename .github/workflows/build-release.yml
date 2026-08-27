@@ -10,7 +10,7 @@ on:
       patch_revision:
         description: Patch artifact revision
         required: false
-        default: "8"
+        default: "9"
         type: string
       upstream_ref:
         description: Upstream tag or branch; defaults to v<version>
@@ -87,9 +87,16 @@ jobs:
         working-directory: upstream
         run: npm ci
 
-      - name: Lint patched Codex registry
+      - name: Lint patched source files
         working-directory: upstream
-        run: ./node_modules/.bin/eslint 'open-sse/config/providers/registry/codex/index.ts'
+        run: >-
+          ./node_modules/.bin/eslint
+          'open-sse/config/providers/registry/codex/index.ts'
+          'open-sse/handlers/chatCore.ts'
+          'open-sse/handlers/imageGeneration.ts'
+          'src/lib/db/providers.ts'
+          'src/lib/oauth/services/codexImport.ts'
+          'src/lib/usage/codexImageArtifactSink.ts'
 
       - name: Test GPT-5.6 Responses normalization
         working-directory: upstream
@@ -108,6 +115,19 @@ jobs:
           --import ./tests/_setup/isolateDataDir.ts
           --test --test-force-exit
           tests/unit/cline-force-stream.test.ts
+
+      - name: Test preserved server runtime behavior
+        working-directory: upstream
+        run: >-
+          node --import tsx/esm
+          --import ./open-sse/utils/setupPolyfill.ts
+          --import ./tests/_setup/isolateDataDir.ts
+          --test --test-force-exit
+          tests/unit/image-generation-handler.test.ts
+          tests/unit/codexBulkImport.test.ts
+          tests/unit/db-read-cache.test.ts
+          tests/unit/codex-image-artifact-sink.test.ts
+          tests/unit/gemini-web-image-account-fallback.test.ts
 
       - name: Install Chromium
         working-directory: upstream

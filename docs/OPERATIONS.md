@@ -50,6 +50,11 @@ Then:
    and runtime logs.
 7. Keep the previous release available for rollback until the new version is accepted.
 
+For the v3.8.50 migration, disable the legacy `45-image-auth-guard.conf` drop-in
+only after confirming the packaged source contains `imageCredentialRetry` and its
+account-fallback tests passed. Keep the drop-in and patcher in the upgrade backup;
+they remain required if rolling the package back to v3.8.47.
+
 A GitHub Release is not deployment. Repository workflows must not SSH to or
 silently modify production.
 

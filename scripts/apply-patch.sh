@@ -39,6 +39,18 @@ if has_patch "patches/quota-ui.patch"; then
   grep -q 'data-omniroute-quota-ui-patch="source-v1"' "$TARGET"
 fi
 
+if has_patch "patches/server-runtime-compat.patch"; then
+  grep -q 'const IMAGE_SIZE_PATTERN' "$UPSTREAM/open-sse/handlers/imageGeneration.ts"
+  grep -q 'invalidateDbCache("connections")' "$UPSTREAM/src/lib/db/providers.ts"
+  grep -q 'providerSpecificData.workspaceId = chatgptAccountId' "$UPSTREAM/src/lib/oauth/services/codexImport.ts"
+fi
+
+if has_patch "patches/etsy-image-artifact-sink.patch"; then
+  [[ -f "$UPSTREAM/src/lib/usage/codexImageArtifactSink.ts" ]]
+  grep -q 'OMNIROUTE_ETSY_IMAGE_ARTIFACT_SINK' "$UPSTREAM/src/lib/usage/codexImageArtifactSink.ts"
+  grep -q 'drainCodexImageArtifactStream' "$UPSTREAM/open-sse/handlers/chatCore.ts"
+fi
+
 # Keep this upstream regression guard while the file/contract exists. If a future
 # upstream refactors the normalization module, the baseline migration must replace
 # this assertion deliberately rather than silently weakening it.
