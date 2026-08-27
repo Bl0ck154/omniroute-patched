@@ -1,8 +1,7 @@
 diff --git a/open-sse/config/providers/registry/codex/index.ts b/open-sse/config/providers/registry/codex/index.ts
-index 01a43c7..6c6b076 100644
 --- a/open-sse/config/providers/registry/codex/index.ts
 +++ b/open-sse/config/providers/registry/codex/index.ts
-@@ -11,6 +11,9 @@ export const codexProvider: RegistryEntry = {
+@@ -13,6 +13,9 @@ export const codexProvider: RegistryEntry = {
    alias: "cx",
    format: "openai-responses",
    executor: "codex",
@@ -10,17 +9,15 @@ index 01a43c7..6c6b076 100644
 +  // Mark it forceStream so chatCore drains terminal SSE into JSON instead of waiting for EOF.
 +  forceStream: true,
    baseUrl: "https://chatgpt.com/backend-api/codex/responses",
+   reasoningTransport: "opaque",
    authType: "oauth",
-   authHeader: "bearer",
 diff --git a/tests/unit/cline-force-stream.test.ts b/tests/unit/cline-force-stream.test.ts
-index 2c8ea5c..8dd4040 100644
 --- a/tests/unit/cline-force-stream.test.ts
 +++ b/tests/unit/cline-force-stream.test.ts
-@@ -22,14 +22,21 @@ test("clinepass provider is flagged forceStream (streaming-only upstream)", () =
+@@ -21,14 +21,20 @@ test("clinepass provider is flagged forceStream (streaming-only upstream)", () => {
    assert.equal(REGISTRY.clinepass?.forceStream, true);
  });
-
-+
+ 
 +test("codex provider is flagged forceStream because /responses always streams upstream", () => {
 +  assert.equal(REGISTRY.codex?.forceStream, true);
 +});
@@ -41,5 +38,5 @@ index 2c8ea5c..8dd4040 100644
 +    assert.equal(upstreamStream, true, provider);
 +  }
  });
-
+ 
  test("client-facing stream stays false for a stream:false JSON caller (so SSE→JSON conversion runs)", () => {
