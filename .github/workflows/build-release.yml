@@ -94,7 +94,6 @@ jobs:
           'open-sse/config/providers/registry/codex/index.ts'
           'src/lib/oauth/services/codexImport.ts'
           'open-sse/executors/codex/tools.ts'
-          'open-sse/handlers/imageGeneration.ts'
           'src/lib/usage/codexImageArtifactSink.ts'
 
       - name: Test GPT-5.6 Responses normalization
