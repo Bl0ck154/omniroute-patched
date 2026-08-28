@@ -1,0 +1,143 @@
+diff --git a/open-sse/executors/codex/tools.ts b/open-sse/executors/codex/tools.ts
+index 12cb840f2..277af81eb 100644
+--- a/open-sse/executors/codex/tools.ts
++++ b/open-sse/executors/codex/tools.ts
+@@ -26,7 +26,14 @@ export const CODEX_HOSTED_TOOL_TYPES: ReadonlySet<string> = new Set([
+ // dropped for free-plan accounts (mirrors CLIProxyAPI's isCodexFreePlanAuth).
+ export function isCodexFreePlan(providerSpecificData: unknown): boolean {
+   if (!providerSpecificData || typeof providerSpecificData !== "object") return false;
+-  const plan = (providerSpecificData as { workspacePlanType?: unknown }).workspacePlanType;
++  const data = providerSpecificData as {
++    workspacePlanType?: unknown;
++    chatgptPlanType?: unknown;
++  };
++  const plan =
++    typeof data.workspacePlanType === "string"
++      ? data.workspacePlanType
++      : data.chatgptPlanType;
+   return typeof plan === "string" && plan.trim().toLowerCase() === "free";
+ }
+ 
+diff --git a/open-sse/handlers/imageGeneration.ts b/open-sse/handlers/imageGeneration.ts
+index e8cf56d0e..24e478e07 100644
+--- a/open-sse/handlers/imageGeneration.ts
++++ b/open-sse/handlers/imageGeneration.ts
+@@ -8,6 +8,7 @@ import { getAntigravityEnvelopeUserAgent } from "../services/antigravityIdentity
+ import { kieExecutor } from "../executors/kie.ts";
+ import { mapImageSize } from "../translator/image/sizeMapper.ts";
+ import { getCodexClientVersion, getCodexUserAgent } from "../config/codexClient.ts";
++import { isCodexFreePlan } from "../executors/codex/tools.ts";
+ import { ChatGptWebExecutor } from "../executors/chatgpt-web.ts";
+ import type { ExecutorLog, ProviderCredentials } from "../executors/base.ts";
+ import { getChatGptImage, findChatGptImageBySha256 } from "../services/chatgptImageCache.ts";
+@@ -2599,6 +2600,18 @@ async function handleCodexImageGeneration({
+     });
+   }
+ 
++  if (isCodexFreePlan(credentials?.providerSpecificData)) {
++    return saveImageErrorResult({
++      provider,
++      model,
++      status: 403,
++      startTime,
++      error: "Codex image_generation is unavailable on free-plan accounts",
++      path: logPath,
++      retryable: true,
++    });
++  }
++
+   const workspaceId =
+     credentials?.providerSpecificData &&
+     typeof credentials.providerSpecificData === "object" &&
+@@ -2736,9 +2749,10 @@ async function handleCodexImageGeneration({
+           status: 502,
+           startTime,
+           error:
+-            "Codex completed without producing an image_generation_call — the model may have declined the tool",
++            "Codex completed without producing an image_generation_call — the selected account may not support the hosted image tool",
+           requestBody: requestBodyForLog,
+           path: logPath,
++          retryable: true,
+         },
+       };
+     }
+diff --git a/tests/unit/codex-free-plan-image-generation.test.ts b/tests/unit/codex-free-plan-image-generation.test.ts
+index 4215da6ac..fea3afcf5 100644
+--- a/tests/unit/codex-free-plan-image-generation.test.ts
++++ b/tests/unit/codex-free-plan-image-generation.test.ts
+@@ -12,6 +12,9 @@ const { normalizeCodexTools, isCodexFreePlan } = await import("../../open-sse/ex
+ test("isCodexFreePlan detects workspacePlanType === 'free' (case-insensitive)", () => {
+   assert.equal(isCodexFreePlan({ workspacePlanType: "free" }), true);
+   assert.equal(isCodexFreePlan({ workspacePlanType: "FREE" }), true);
++  assert.equal(isCodexFreePlan({ chatgptPlanType: "free" }), true);
++  assert.equal(isCodexFreePlan({ chatgptPlanType: "FREE" }), true);
++  assert.equal(isCodexFreePlan({ workspacePlanType: "team", chatgptPlanType: "free" }), false);
+   assert.equal(isCodexFreePlan({ workspacePlanType: "team" }), false);
+   assert.equal(isCodexFreePlan({ workspacePlanType: "" }), false);
+   assert.equal(isCodexFreePlan({}), false);
+diff --git a/tests/unit/image-generation-handler.test.ts b/tests/unit/image-generation-handler.test.ts
+index 0caa46956..d6f3b7cf7 100644
+--- a/tests/unit/image-generation-handler.test.ts
++++ b/tests/unit/image-generation-handler.test.ts
+@@ -2033,6 +2033,61 @@ test("handleImageGeneration (codex) forwards size and maps GPT-Image quality to
+ // sibling account: executeImageWithCredentialFallback (route.ts) already retries on
+ // this signal when the handler marks the failure `retryable: true` — mirroring the
+ // existing 401 auto-rotate path, no new retry loop needed in the handler itself.
++test("handleImageGeneration (codex) skips imported free-plan accounts and marks them retryable", async () => {
++  const originalFetch = globalThis.fetch;
++  let fetchCalls = 0;
++  globalThis.fetch = async () => {
++    fetchCalls += 1;
++    throw new Error("free-plan image request should not reach upstream");
++  };
++
++  try {
++    const result = await handleImageGeneration({
++      body: { model: "codex/gpt-5.6-terra", prompt: "kitten" },
++      credentials: {
++        accessToken: "codex-token",
++        providerSpecificData: { chatgptPlanType: "free" },
++      },
++      log: null,
++    });
++    assert.equal(result.success, false);
++    assert.equal(result.status, 403);
++    assert.equal(result.retryable, true);
++    assert.equal(fetchCalls, 0);
++  } finally {
++    globalThis.fetch = originalFetch;
++  }
++});
++
++test("handleImageGeneration (codex) retries another account when upstream completes without an image call", async () => {
++  const originalFetch = globalThis.fetch;
++  globalThis.fetch = async () =>
++    new Response(
++      [
++        'data: {"type":"response.completed","response":{"status":"completed"}}',
++        "data: [DONE]",
++        "",
++      ].join("\n"),
++      { status: 200, headers: { "content-type": "text/event-stream" } }
++    );
++
++  try {
++    const result = await handleImageGeneration({
++      body: { model: "codex/gpt-5.6-terra", prompt: "kitten" },
++      credentials: {
++        accessToken: "codex-token",
++        providerSpecificData: { chatgptPlanType: "plus" },
++      },
++      log: null,
++    });
++    assert.equal(result.success, false);
++    assert.equal(result.status, 502);
++    assert.equal(result.retryable, true);
++  } finally {
++    globalThis.fetch = originalFetch;
++  }
++});
++
+ test("handleImageGeneration (codex) marks the ChatGPT-account model-access 400 as retryable", async () => {
+   const originalFetch = globalThis.fetch;
+   globalThis.fetch = async () =>

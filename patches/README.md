@@ -9,6 +9,7 @@ assumed to be valid merely because a later OmniRoute version has a similar file.
 - `server-runtime-compat.patch` — preserves Antigravity image-size propagation,
   provider-connection cache invalidation, and safe Codex bulk-import recovery state.
 - `etsy-image-artifact-sink.patch` — keeps a private stream consumer alive for one
+- `codex-image-free-plan-failover.patch` — recognizes imported Codex free-plan accounts and rotates image generation to another eligible account when the hosted image tool is unavailable.
   explicitly configured API-key/model/tool scope and atomically stores validated
   image bytes without prompts or response payloads.
 
